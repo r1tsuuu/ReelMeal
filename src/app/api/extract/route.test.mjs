@@ -20,6 +20,7 @@ const USEFUL_DRAFT = {
   cookTime: '25 mins',
   ingredients: [{ name: 'chicken breast', amount: '2', unit: 'pieces' }],
   instructions: ['Marinate the chicken.', 'Bake until cooked through.'],
+  tags: ['Chicken', 'Meal Prep'],
 };
 
 const EMPTY_DRAFT = {
@@ -29,6 +30,7 @@ const EMPTY_DRAFT = {
   cookTime: '',
   ingredients: [],
   instructions: [],
+  tags: [],
 };
 
 // ---- request helpers ------------------------------------------------------
@@ -556,6 +558,12 @@ test('[end-to-end] returns a fully-normalized recipe with a unique id and ISO ti
   assert.equal(body.recipe.sourceUrl, DEMO_URL);
   assert.match(body.recipe.id, /.+/);
   assert.match(body.recipe.extractedAt, /^\d{4}-\d{2}-\d{2}T/);
+  // Matches the shared Recipe type in src/types/recipe.ts — a real extraction
+  // must include these or the frontend's collections/filtering features
+  // silently receive undefined instead of an empty default.
+  assert.deepEqual(body.recipe.tags, ['Chicken', 'Meal Prep']);
+  assert.deepEqual(body.recipe.collections, []);
+  assert.equal(body.recipe.savedAt, null);
 });
 
 test('[end-to-end] always responds with HTTP 200, even when everything fails', async () => {

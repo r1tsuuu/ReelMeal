@@ -3,31 +3,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { dependencies } from './dependencies';
 import { DEMO_FALLBACK_TRANSCRIPTS } from '@/utils/demoFallbacks';
+import type { Recipe } from '@/types/recipe';
 
 // Vercel Hobby plan caps serverless functions at 60s (not 300s, which needs
 // Pro). Retries/fallbacks below are trimmed to fit worst-case runs in that budget.
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
-type Ingredient = {
-  name: string;
-  amount: string;
-  unit: string;
-};
-
-type Recipe = {
-  id: string;
-  title: string;
-  sourceUrl: string;
-  extractedAt: string;
-  servings: string;
-  prepTime: string;
-  cookTime: string;
-  ingredients: Ingredient[];
-  instructions: string[];
-};
-
-type RecipeDraft = Omit<Recipe, 'id' | 'sourceUrl' | 'extractedAt'>;
+// The model produces everything except identity/save-state fields — those are
+// assigned once the draft comes back (collections/savedAt always start empty;
+// a freshly extracted recipe hasn't been organized into anything yet).
+type RecipeDraft = Omit<Recipe, 'id' | 'sourceUrl' | 'extractedAt' | 'collections' | 'savedAt'>;
 
 const GROQ_TRANSCRIPTION_ENDPOINT = 'https://api.groq.com/openai/v1/audio/transcriptions';
 const OPENAI_CHAT_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
@@ -48,8 +34,10 @@ const TEXT_ONLY_SYSTEM_PROMPT = [
   'Use exactly this schema:',
   '{"title":"string","servings":"string","prepTime":"string","cookTime":"string",',
   '"ingredients":[{"name":"string","amount":"string","unit":"string"}],',
-  '"instructions":["string"]}.',
+  '"instructions":["string"],"tags":["string"]}.',
   'Use an empty string when a value is not stated, and do not invent ingredients or steps.',
+  'tags is 1-4 short descriptive labels (main ingredient, cuisine, or cooking method,',
+  'e.g. "Chicken", "Quick", "Oven-baked") — use an empty array if nothing fits.',
 ].join(' ');
 
 const VISION_SYSTEM_PROMPT = [
@@ -62,9 +50,11 @@ const VISION_SYSTEM_PROMPT = [
   'Use exactly this schema:',
   '{"title":"string","servings":"string","prepTime":"string","cookTime":"string",',
   '"ingredients":[{"name":"string","amount":"string","unit":"string"}],',
-  '"instructions":["string"]}.',
+  '"instructions":["string"],"tags":["string"]}.',
   'Give your best reasonable estimate for amounts/times that are not explicit — do not',
   'leave fields empty just because an exact number was never stated.',
+  'tags is 1-4 short descriptive labels (main ingredient, cuisine, or cooking method,',
+  'e.g. "Chicken", "Quick", "Oven-baked") — use an empty array if nothing fits.',
 ].join(' ');
 
 const mockRecipe: Recipe = {
@@ -89,6 +79,9 @@ const mockRecipe: Recipe = {
     'Roast at 200°C for 25 minutes until golden.',
     'Serve immediately with crispy cheese edges.',
   ],
+  tags: ['Potato', 'Vegetarian', 'Oven-baked'],
+  collections: [],
+  savedAt: null,
 };
 
 class PipelineError extends Error {}
@@ -112,14 +105,16 @@ function isRecipeDraft(value: unknown): value is RecipeDraft {
     return false;
   }
 
-  if (!Array.isArray(value.ingredients) || !Array.isArray(value.instructions)) return false;
+  if (!Array.isArray(value.ingredients) || !Array.isArray(value.instructions) || !Array.isArray(value.tags)) {
+    return false;
+  }
 
   return value.ingredients.every((ingredient) => (
     isRecord(ingredient)
     && isString(ingredient.name)
     && isString(ingredient.amount)
     && isString(ingredient.unit)
-  )) && value.instructions.every(isString);
+  )) && value.instructions.every(isString) && value.tags.every(isString);
 }
 
 // A shape-valid draft can still be a correctly-empty non-answer — e.g. a
@@ -451,6 +446,8 @@ export async function POST(request: Request) {
       id: randomUUID(),
       sourceUrl,
       extractedAt: new Date().toISOString(),
+      collections: [],
+      savedAt: null,
     };
 
     return json({ success: true, recipe, modelUsed: modelTag });

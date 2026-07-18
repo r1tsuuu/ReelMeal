@@ -1,13 +1,19 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Recipe, LoadingStage, APIResponsePayload } from '@/types/recipe';
-import { STORAGE_KEY, API_ENDPOINT, LOADING_MESSAGES } from '@/utils/constants';
+import { Recipe, Collection, LoadingStage, APIResponsePayload } from '@/types/recipe';
+import { STORAGE_KEY, ONBOARDED_KEY, API_ENDPOINT, LOADING_MESSAGES, RECENT_LIMIT } from '@/utils/constants';
 import { isValidInstagramUrl } from '@/utils/regex';
+import { loadCollections, saveCollections } from '@/utils/collections';
+import { useLongPress } from '@/hooks/useLongPress';
 import RecipeCard from '@/components/RecipeCard';
 import RecipeModal from '@/components/RecipeModal';
 import KitchenMode from '@/components/KitchenMode';
+import Onboarding from '@/components/Onboarding';
+import FilterChips from '@/components/FilterChips';
+import CollectionsModal from '@/components/CollectionsModal';
+import DuplicateBanner from '@/components/DuplicateBanner';
 
 export default function Page() {
   return (
@@ -17,16 +23,35 @@ export default function Page() {
   );
 }
 
+// Tap opens the recipe, long-press opens "save to collections" for it. Both
+// gestures need to live on the same element to be told apart, so this wraps
+// RecipeCard's own button in a div carrying the long-press handlers — the
+// card's onClick is a no-op and the real dispatch happens here via bubbling.
+function RecipeTile({ recipe, onOpen, onSave }: { recipe: Recipe; onOpen: () => void; onSave: () => void }) {
+  const longPress = useLongPress(onSave, onOpen);
+  return (
+    <div {...longPress}>
+      <RecipeCard recipe={recipe} onClick={() => {}} />
+    </div>
+  );
+}
+
 function Dashboard() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  const [readyToRender, setReadyToRender] = useState(false);
+  const [onboarded, setOnboarded] = useState(false);
+  const [collections, setCollections] = useState<Collection[]>([]);
   const [currentRecipe, setCurrentRecipe] = useState<Recipe | null>(null);
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
   const [stage, setStage] = useState<LoadingStage>('idle');
   const [inputUrl, setInputUrl] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [kitchenMode, setKitchenMode] = useState(false);
+  const [activeFilter, setActiveFilter] = useState('all');
+  const [collectionsTarget, setCollectionsTarget] = useState<Recipe | null>(null);
+  const [duplicate, setDuplicate] = useState<Recipe | null>(null);
 
   useEffect(() => {
     try {
@@ -35,12 +60,16 @@ function Dashboard() {
     } catch {
       setSavedRecipes([]);
     }
+    setCollections(loadCollections());
+    setOnboarded(window.localStorage.getItem(ONBOARDED_KEY) === '1');
+    setReadyToRender(true);
   }, []);
 
   useEffect(() => {
     const shareUrl = searchParams.get('shareUrl');
     if (shareUrl) {
       setInputUrl(shareUrl);
+      setStage('sharing');
       void handleExtract(shareUrl);
     }
     if (searchParams.get('error') === 'invalid_link') {
@@ -49,6 +78,11 @@ function Dashboard() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  function persist(next: Recipe[]) {
+    setSavedRecipes(next);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  }
 
   async function handleExtract(url: string) {
     if (!isValidInstagramUrl(url)) {
@@ -70,9 +104,12 @@ function Dashboard() {
       const data: APIResponsePayload = await response.json();
 
       if (data.success && data.recipe) {
-        const next = [data.recipe, ...savedRecipes];
-        setSavedRecipes(next);
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+        const existing = savedRecipes.find((r) => r.sourceUrl === data.recipe!.sourceUrl);
+        if (existing) {
+          setDuplicate(existing);
+        } else {
+          persist([data.recipe, ...savedRecipes]);
+        }
         setInputUrl('');
         setStage('idle');
         router.replace('/');
@@ -92,13 +129,47 @@ function Dashboard() {
   }
 
   function handleDelete(id: string) {
-    const next = savedRecipes.filter((recipe) => recipe.id !== id);
-    setSavedRecipes(next);
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    persist(savedRecipes.filter((recipe) => recipe.id !== id));
     setCurrentRecipe(null);
   }
 
+  function handleCreateCollection(name: string): string {
+    const id = `${name.trim().toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+    const next = [...collections, { id, name: name.trim() }];
+    setCollections(next);
+    saveCollections(next);
+    return id;
+  }
+
+  function handleCollectionsConfirm(selectedIds: string[]) {
+    if (!collectionsTarget) return;
+    const savedAt = new Date().toISOString();
+    persist(savedRecipes.map((r) => (
+      r.id === collectionsTarget.id ? { ...r, collections: selectedIds, savedAt } : r
+    )));
+    setCollectionsTarget(null);
+  }
+
+  const filteredRecipes = useMemo(() => {
+    if (activeFilter === 'all') return savedRecipes;
+    if (activeFilter === 'recent') return savedRecipes.slice(0, RECENT_LIMIT);
+    return savedRecipes.filter((r) => r.tags.includes(activeFilter));
+  }, [savedRecipes, activeFilter]);
+
   const isBusy = stage !== 'idle' && stage !== 'error';
+
+  if (!readyToRender) return null;
+
+  if (!onboarded) {
+    return (
+      <Onboarding
+        onFinish={() => {
+          window.localStorage.setItem(ONBOARDED_KEY, '1');
+          setOnboarded(true);
+        }}
+      />
+    );
+  }
 
   return (
     <main className="min-h-screen bg-cream px-4 py-8">
@@ -128,22 +199,53 @@ function Dashboard() {
           </p>
         )}
 
+        <FilterChips recipes={savedRecipes} activeFilter={activeFilter} onSelect={setActiveFilter} />
+
+        {duplicate && (
+          <DuplicateBanner
+            title={duplicate.title}
+            onView={() => {
+              setCurrentRecipe(duplicate);
+              setDuplicate(null);
+            }}
+            onDismiss={() => setDuplicate(null)}
+          />
+        )}
+
         {savedRecipes.length === 0 ? (
           <p className="text-center text-charcoal/60">No recipes yet — paste a link above to get started.</p>
+        ) : filteredRecipes.length === 0 ? (
+          <p className="text-center text-charcoal/60">No recipes match this filter.</p>
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
-            {savedRecipes.map((recipe) => (
-              <RecipeCard key={recipe.id} recipe={recipe} onClick={() => setCurrentRecipe(recipe)} />
+            {filteredRecipes.map((recipe) => (
+              <RecipeTile
+                key={recipe.id}
+                recipe={recipe}
+                onOpen={() => setCurrentRecipe(recipe)}
+                onSave={() => setCollectionsTarget(recipe)}
+              />
             ))}
           </div>
         )}
       </div>
+
+      {collectionsTarget && (
+        <CollectionsModal
+          collections={collections}
+          initialSelected={collectionsTarget.collections}
+          onCreateCollection={handleCreateCollection}
+          onConfirm={handleCollectionsConfirm}
+          onCancel={() => setCollectionsTarget(null)}
+        />
+      )}
 
       {currentRecipe && !kitchenMode && (
         <RecipeModal
           recipe={currentRecipe}
           onClose={() => setCurrentRecipe(null)}
           onKitchenMode={() => setKitchenMode(true)}
+          onDelete={() => handleDelete(currentRecipe.id)}
         />
       )}
 

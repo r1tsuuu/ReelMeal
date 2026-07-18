@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test src/app/api/extract/route.test.mjs"
+    "test": "tsx --test src/app/api/extract/route.test.mjs src/components/kitchenUtils.test.mjs src/components/KitchenMode.test.mjs"
   },
   "dependencies": {
     "ffmpeg-static": "^5.3.0",
