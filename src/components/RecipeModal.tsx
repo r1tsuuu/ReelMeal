@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { Recipe } from '@/types/recipe';
+import ConfirmDialog from './ConfirmDialog';
 
 interface RecipeModalProps {
   recipe: Recipe;
@@ -12,6 +13,7 @@ interface RecipeModalProps {
 
 export default function RecipeModal({ recipe, onClose, onKitchenMode, onDelete }: RecipeModalProps) {
   const [checkedIngredients, setCheckedIngredients] = useState<Set<number>>(new Set());
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const toggleIngredient = (index: number) => {
     setCheckedIngredients((prev) => {
@@ -81,15 +83,24 @@ export default function RecipeModal({ recipe, onClose, onKitchenMode, onDelete }
 
         <button
           type="button"
-          onClick={() => {
-            if (window.confirm(`Remove \"${recipe.title}\" from your vault? This can't be undone.`)) {
-              onDelete();
-            }
-          }}
+          onClick={() => setShowConfirm(true)}
           className="mt-3 w-full rounded-lg py-2 text-sm font-medium text-charcoal/50 hover:text-red-600"
         >
           Remove from Vault
         </button>
+
+        <ConfirmDialog
+          open={showConfirm}
+          title={'Remove "' + recipe.title + '" from your vault?'}
+          message="This can't be undone."
+          confirmLabel="Remove"
+          cancelLabel="Cancel"
+          onConfirm={() => {
+            setShowConfirm(false);
+            onDelete();
+          }}
+          onCancel={() => setShowConfirm(false)}
+        />
       </div>
     </div>
   );
