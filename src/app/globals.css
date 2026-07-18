@@ -1,10 +1,35 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  /* ReelMeal brand palette — mirrors tailwind.config.js's color extensions so
+     components can also reference these directly via var(--x) inline styles. */
+  --cream: #f8f4ec;
+  --cream-deep: #f1ead9;
+  --charcoal: #3c3a37;
+  --terracotta: #d9714e;
+  --terracotta-dark: #c15f3e;
+  --sage: #6f8a5f;
+  --sage-deep: #5c7451;
+
+  --font-display: 'Fraunces', ui-serif, Georgia, serif;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
 
 html,
 body {
   padding: 0;
   margin: 0;
-  background-color: #f5e6d3;
+  background-color: var(--cream);
+  font-family: var(--font-sans);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
 }
