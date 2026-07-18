@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { BookOpen, Share2 } from 'lucide-react';
+import { useDeviceFrame } from '@/components/DeviceFrame/FrameContext';
 
 interface OnboardingProps {
   onFinish: () => void;
@@ -27,11 +28,12 @@ export function Onboarding({ onFinish }: OnboardingProps) {
   const [step, setStep] = useState(0);
   const slide = slides[step];
   const isLast = step === slides.length - 1;
+  const framed = useDeviceFrame();
 
   const advance = () => (isLast ? onFinish() : setStep((s) => s + 1));
 
   return (
-    <div className="relative flex min-h-dvh flex-col items-center justify-center gap-6 overflow-hidden bg-cream px-8 text-center">
+    <div className={`relative flex ${framed ? 'min-h-full' : 'min-h-dvh'} flex-col items-center justify-center gap-6 overflow-hidden bg-cream px-8 text-center`}>
       {/* soft background accents */}
       <div className="pointer-events-none absolute -left-16 top-10 size-56 rounded-full bg-terracotta/8 blur-2xl" />
       <div className="pointer-events-none absolute -right-16 bottom-10 size-56 rounded-full bg-sage/10 blur-2xl" />
