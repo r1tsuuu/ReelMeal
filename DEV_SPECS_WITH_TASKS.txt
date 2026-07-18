@@ -1,0 +1,486 @@
+Reel-to-Recipe: 4-Hour Hackathon Technical Specification
+Event: OpenAI Build Week 2026 (Apps for Your Life)
+ Architecture: Next.js 14 PWA + Serverless
+ Operating Cost: $0.00
+ Build Time: 4 hours
+ Team: 4 developers in isolated code branches
+
+System Architecture (Quick Ref)
+Instagram Share → Web Share Target API → Regex Clean URL
+                                              ↓
+                                    Frontend State Engine
+                                              ↓
+                         POST /api/extract [Dev 1 Serverless]
+                                              ↓
+            Cobalt API → Groq Whisper → OpenRouter LLM Cascade
+                                              ↓
+                            Return Clean JSON Recipe
+                                              ↓
+                    localStorage Persist + Dashboard Update
+                                              ↓
+                    User Toggles Kitchen Mode [Dev 4]
+                                              ↓
+            Wake-Lock Active + Hardware Key Intercept
+
+File Structure & Ownership
+Rule: Do not write files outside your assigned block. This eliminates merge conflicts.
+reel-to-recipe/
+├── public/
+│   ├── manifest.json            [Dev 3] PWA share_target config
+│   └── sw.js                    [Dev 3] Service worker (minimal)
+├── src/
+│   ├── types/
+│   │   └── recipe.ts            [SHARED] TypeScript interfaces
+│   ├── utils/
+│   │   ├── mockData.ts          [SHARED] Static mock recipes
+│   │   └── regex.ts             [SHARED] URL sanitization
+│   ├── components/
+│   │   ├── RecipeCard.tsx       [Dev 2] Recipe display card
+│   │   └── KitchenMode.tsx      [Dev 4] Hands-free cooking UI
+│   ├── app/
+│   │   ├── layout.tsx           [Dev 3] PWA headers + wrapper
+│   │   ├── page.tsx             [Dev 2] Main dashboard + state
+│   │   ├── shared/
+│   │   │   └── page.tsx         [Dev 3] Web Share Target router
+│   │   └── api/
+│   │       └── extract/
+│   │           └── route.ts     [Dev 1] LLM pipeline + Cobalt
+├── next.config.js               [SHARED] PWA plugin config
+└── .env.local                   [SHARED] API keys (DO NOT COMMIT)
+
+Data Contract (Copy This First)
+Save to: src/types/recipe.ts
+Every developer builds against this exact shape. Treat it as law.
+export interface Ingredient {
+  name: string;
+  amount: string; // "1/2", "3", "to taste"
+  unit: string;   // "cup", "tbsp", "grams", "pieces"
+}
+
+export interface Recipe {
+  id: string;            // Hash of source URL
+  title: string;
+  sourceUrl: string;
+  extractedAt: string;   // ISO timestamp
+  servings: string;      // "2-4" or "4"
+  prepTime: string;      // "15 mins"
+  cookTime: string;      // "30 mins"
+  ingredients: Ingredient[];
+  instructions: string[]; // Ordered step array
+}
+
+export type LoadingStage = 'idle' | 'fetching_stream' | 'transcribing_audio' | 'parsing_ai' | 'error';
+
+export interface APIRequestPayload {
+  url: string;
+  useMock: boolean;
+}
+
+export interface APIResponsePayload {
+  success: boolean;
+  recipe?: Recipe;
+  error?: string;
+  modelUsed?: string;
+}
+
+Shared Utilities (Copy These)
+Regex Engine
+Save to: src/utils/regex.ts
+/**
+ * Extracts clean Instagram Reel URL from messy mobile share text.
+ * Input: "Look at this! https://www.instagram.com/reel/C8XyZ/?igsh=MTZ1&other=param"
+ * Output: "https://www.instagram.com/reel/C8XyZ/"
+ */
+export function extractInstagramUrl(sharedText: string): string | null {
+  const urlRegex = /(https?:\/\/(?:www\.)?instagram\.com\/(?:p|reel)\/[a-zA-Z0-9_\-]+)/i;
+  const match = sharedText.match(urlRegex);
+  if (!match) return null;
+  return `${match[1].replace(/\/$/, '')}/`;
+}
+Mock Data
+Save to: src/utils/mockData.ts
+import { Recipe } from '@/types/recipe';
+
+export const mockRecipe: Recipe = {
+  id: "mock-1",
+  title: "Crispy Garlic Parmesan Potatoes",
+  sourceUrl: "https://www.instagram.com/reel/C8XyZ/",
+  extractedAt: new Date().toISOString(),
+  servings: "4",
+  prepTime: "10 mins",
+  cookTime: "25 mins",
+  ingredients: [
+    { name: "Baby Yukon Gold Potatoes", amount: "1.5", unit: "lbs" },
+    { name: "Olive Oil", amount: "2", unit: "tbsp" },
+    { name: "Garlic Powder", amount: "1", unit: "tbsp" },
+    { name: "Parmesan Cheese", amount: "1/2", unit: "cup" },
+    { name: "Sea Salt & Pepper", amount: "to taste", unit: "" }
+  ],
+  instructions: [
+    "Wash and halve potatoes.",
+    "Toss with oil, garlic, salt, pepper, and parmesan.",
+    "Arrange cut-side down on sheet pan.",
+    "Roast at 200°C for 25 minutes until golden.",
+    "Serve immediately with crispy cheese edges."
+  ]
+};
+
+Dev 1: Backend Pipeline
+Target File: src/app/api/extract/route.ts
+Job: Ingest Instagram URL → stream video via Cobalt → transcribe with Groq → extract recipe with LLM cascade → return clean JSON.
+Codex Prompt (Copy-Paste This):
+Create src/app/api/extract/route.ts as a Next.js 14 Route Handler.
+
+Exports:
+export const maxDuration = 300; // 5-minute timeout for Vercel
+export const dynamic = 'force-dynamic';
+
+POST Handler Logic:
+1. Accept { url: string, useMock: boolean }
+2. If useMock === true: return { success: true, recipe: mockRecipe }
+3. If useMock === false:
+   a) POST to https://api.cobalt.tools/api/json with body:
+      { "url": "INPUT_URL", "downloadMode": "audio", "audioFormat": "mp3" }
+      Grab response.url (direct stream link)
+   b) Fetch audio stream to ArrayBuffer, convert to Blob
+   c) POST to Groq Whisper (https://api.groq.com/openai/v1/audio/transcriptions)
+      Headers: Authorization: Bearer ${GROQ_API_KEY}
+      Body: FormData with file + model: "whisper-large-v3"
+      Extract response.text (transcript)
+   d) POST to OpenRouter (https://openrouter.ai/api/v1/chat/completions)
+      Try in order: llama-3.3-70b -> qwen-2.5-72b -> gemma-2-9b -> GPT-4o fallback
+      System prompt: "Extract recipe from transcript. Return ONLY valid JSON (no markdown) matching this schema: {title, servings, prepTime, cookTime, ingredients: [{name, amount, unit}], instructions: [string[]]}"
+      User prompt: "Transcription: [INSERT TEXT]"
+      Catch 429 errors, retry next model in chain
+   e) Parse JSON response strictly. If parsing fails, retry next model.
+   f) Return { success: true, recipe: PARSED_JSON, modelUsed: "model_name" }
+
+Error handling: Wrap everything in try-catch. Return { success: false, error: "message" } on failure.
+Environment Variables:
+GROQ_API_KEY=your_groq_key
+OPENROUTER_API_KEY=your_openrouter_key
+OPENAI_API_KEY=fallback_only
+Integration Point: Dev 2 calls this with fetch('/api/extract', { method: 'POST', body: JSON.stringify({ url, useMock: true/false }) }).
+
+Dev 2: Frontend State & Dashboard
+Target Files: src/app/page.tsx + src/components/RecipeCard.tsx
+Job: Dashboard layout, state machine, localStorage persistence, URL/share parameter handling.
+Codex Prompt (Copy-Paste This):
+Create src/app/page.tsx as the main app layout using React hooks and Tailwind CSS.
+
+State Variables:
+- currentRecipe: Recipe | null
+- savedRecipes: Recipe[] (loaded from localStorage on mount)
+- stage: LoadingStage ('idle' | 'fetching_stream' | 'transcribing_audio' | 'parsing_ai' | 'error')
+- inputUrl: string
+- errorMessage: string | null
+
+Lifecycle:
+1. On component mount (useEffect):
+   a) Read 'reel-to-recipe-vault' from localStorage, parse as Recipe[], set savedRecipes
+   b) Check URL search params for ?shareUrl=... If present, set inputUrl and auto-trigger submission
+
+2. Form submission handler (handleSubmit):
+   a) Validate URL (basic check: contains instagram.com)
+   b) Set stage to 'fetching_stream', clear errors
+   c) POST to /api/extract with { url: inputUrl, useMock: false }
+   d) On response:
+      - If success: push recipe to front of savedRecipes array, persist to localStorage, reset inputUrl, set stage to 'idle'
+      - If error: set stage to 'error', display errorMessage
+   e) For early dev: Toggle useMock to true to test UI without network calls
+
+3. Render Layout:
+   - Top: Input field for URL + "Extract Recipe" button (color: #C75B3F)
+   - Loading state: Show stage text like "Downloading reel..." → "Transcribing..." → "Parsing ingredients..."
+   - Main grid: Map savedRecipes to <RecipeCard /> components in masonry layout
+   - Background: Cream (#F5E6D3), text: dark slate
+
+4. RecipeCard component (src/components/RecipeCard.tsx):
+   - Takes recipe: Recipe + onSelect: (recipe: Recipe) => void
+   - Display: Title, servings, times, ingredient count, cook time
+   - On click: setCurrentRecipe(recipe) in parent + show full recipe modal overlay
+
+5. Recipe Modal Overlay:
+   - Show full title, ingredients list (checkbox-able), instructions (numbered)
+   - "Kitchen Mode" button: Calls onKitchenMode(recipe)
+   - Close button: setCurrentRecipe(null)
+Integration Points:
+Calls Dev 1's /api/extract endpoint
+Passes recipes to Dev 4's <KitchenMode />
+Reads/writes localStorage key: 'reel-to-recipe-vault'
+
+Dev 3: PWA & Share Target
+Target Files: public/manifest.json, public/sw.js, src/app/layout.tsx, src/app/shared/page.tsx
+Job: Make the web app installable, intercept native Android share sheet, route to dashboard.
+1. Manifest
+Save to: public/manifest.json
+{
+  "name": "Reel to Recipe",
+  "short_name": "Reel2Recipe",
+  "theme_color": "#C75B3F",
+  "background_color": "#F5E6D3",
+  "display": "standalone",
+  "orientation": "portrait",
+  "start_url": "/",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "share_target": {
+    "action": "/shared",
+    "method": "GET",
+    "params": {
+      "text": "text"
+    }
+  }
+}
+2. Service Worker
+Save to: public/sw.js
+const CACHE_NAME = 'r2r-v1-core';
+const ASSETS = ['/', '/manifest.json'];
+
+self.addEventListener('install', (e) => {
+  e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)));
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil(clients.claim());
+});
+
+self.addEventListener('fetch', (e) => {
+  e.respondWith(
+    caches.match(e.request).then(res => res || fetch(e.request))
+  );
+});
+3. Layout Wrapper
+In src/app/layout.tsx, add to <head>:
+export const metadata = {
+  title: 'Reel to Recipe',
+  manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'Reel2Recipe'
+  },
+  themeColor: '#C75B3F',
+  mobileAlternate: {
+    media: 'only screen and (max-width: 640px)',
+    url: '/'
+  }
+};
+
+// Inside JSX <head> section (Metadata object handles this in Next.js 14)
+// Ensure manifest link exists: <link rel="manifest" href="/manifest.json" />
+// Ensure service worker registration: <script> register sw.js on mount
+4. Share Target Router
+Save to: src/app/shared/page.tsx
+'use client';
+
+import { useSearchParams, useRouter } from 'next/navigation';
+import { useEffect } from 'react';
+import { extractInstagramUrl } from '@/utils/regex';
+
+export default function SharedPage() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  useEffect(() => {
+    const sharedText = searchParams.get('text');
+
+    if (!sharedText) {
+      router.replace('/');
+      return;
+    }
+
+    const cleanedUrl = extractInstagramUrl(sharedText);
+
+    if (!cleanedUrl) {
+      router.replace('/?error=invalid_link');
+      return;
+    }
+
+    // Route back to dashboard with URL pre-filled
+    router.replace(`/?shareUrl=${encodeURIComponent(cleanedUrl)}`);
+  }, [searchParams, router]);
+
+  return <div>Processing share...</div>;
+}
+Integration Points:
+Android share sheet → /shared?text=... → regex clean → redirect to /?shareUrl=...
+Dev 2 reads shareUrl param on dashboard mount
+
+Dev 4: Kitchen Mode (Hands-Free Cooking)
+Target File: src/components/KitchenMode.tsx
+Job: Full-screen cooking interface with zero-dim lock, large text, touch/volume nav.
+Codex Prompt (Copy-Paste This):
+Create src/components/KitchenMode.tsx as a React client component.
+
+Props:
+- recipe: Recipe
+- onClose: () => void
+
+Component Logic:
+1. State: const [stepIndex, setStepIndex] = useState(0)
+
+2. Wake-Lock Management (on mount):
+   try {
+     if ('wakeLock' in navigator) {
+       const lock = await navigator.wakeLock.request('screen');
+       // Store reference for cleanup on unmount
+     }
+   } catch (e) {
+     console.warn('Wake lock unavailable');
+   }
+
+3. Keyboard Intercept (useEffect):
+   const handleKeydown = (e: KeyboardEvent) => {
+     if (e.key === 'ArrowRight' || e.key === 'VolumeUp') {
+       e.preventDefault();
+       setStepIndex(prev => Math.min(prev + 1, recipe.instructions.length - 1));
+     }
+     if (e.key === 'ArrowLeft' || e.key === 'VolumeDown') {
+       e.preventDefault();
+       setStepIndex(prev => Math.max(prev - 1, 0));
+     }
+   };
+   window.addEventListener('keydown', handleKeydown);
+   // Cleanup on unmount
+
+4. Render Layout (dark charcoal #121212, white text):
+   - Top: Large text "Step X of Y"
+   - Middle: Massive typography rendering recipe.instructions[stepIndex]
+   - Bottom: Progress bar + ingredient list sidebar (optional)
+   - Hit zones: Left 50% of screen = previous step, Right 50% = next step
+
+5. Styling:
+   - Full viewport, no scrolling
+   - Font size: 3rem+ for instructions
+   - Padding: generous margins
+   - Touch targets: min 48px height
+Integration Point: Dev 2 calls <KitchenMode recipe={recipe} onClose={() => setCurrentRecipe(null)} /> when user clicks "Kitchen Mode" button.
+
+Shared Configuration
+next.config.js:
+const withPWA = require('next-pwa')({
+  dest: 'public',
+  register: true,
+  skipWaiting: true,
+});
+
+module.exports = withPWA({
+  reactStrictMode: true,
+});
+Install PWA package:
+npm install next-pwa
+tailwind.config.js (extend if needed):
+module.exports = {
+  theme: {
+    colors: {
+      terracotta: '#C75B3F',
+      cream: '#F5E6D3',
+      sage: '#87A878',
+    }
+  }
+};
+
+Integration Checklist (Final Hour)
+Hour 3:00 - Merge Point
+Dev 3 Merges PWA (10 min):
+[ ] public/manifest.json committed
+[ ] public/sw.js committed
+[ ] src/app/layout.tsx updated with PWA headers
+[ ] Test: npm run dev, open in mobile browser, check "Add to Home Screen" available
+Dev 2 Merges Dashboard (10 min):
+[ ] src/app/page.tsx committed
+[ ] src/components/RecipeCard.tsx committed
+[ ] Test: Form input exists, paste mock URL, useMock: true returns mock recipe, appears in grid
+Dev 4 Merges Kitchen Mode (10 min):
+[ ] src/components/KitchenMode.tsx committed
+[ ] Integrated into Dev 2's modal overlay
+[ ] Test: Click "Kitchen Mode" on a card, verify full screen, test arrow keys advance steps
+Dev 1 Deploys API (15 min):
+[ ] src/app/api/extract/route.ts committed
+[ ] .env.local set with API keys
+[ ] Deploy to Vercel: vercel
+[ ] Test: POST to /api/extract with useMock: false, public Instagram Reel URL, verify JSON response
+Hour 3:45 - Live Test
+[ ] One person shares a real Instagram Reel from Android phone into the app
+[ ] Entire pipeline runs: URL → API → recipe card → localStorage
+[ ] Kitchen Mode activates, step nav works
+[ ] Record 2-min demo video showing flow
+Hour 4:00 - Polish
+[ ] GitHub repo public, README filled
+[ ] Vercel live URL in submission
+[ ] .env.local NOT in git
+[ ] Demo video uploaded
+
+Quick Dependency List
+npm install next@14 react@18 tailwind-css
+npm install next-pwa
+npm install lucide-react  # For icons
+
+Testing Strategy
+Dev 1 (API):
+Test locally with useMock: true, verify JSON shape
+Test with real URL once Groq/OpenRouter keys are active
+Dev 2 (Dashboard):
+Mock mode first: disable API calls, feed hardcoded recipes
+localStorage debugging: open DevTools → Application → Local Storage
+Dev 3 (PWA):
+Test on physical Android: add to home screen, test share from Instagram
+Dev 4 (Kitchen):
+Volume key testing: simulate in browser DevTools Device Toolbar
+
+Failure Modes & Fallbacks
+Problem
+Fix
+Cobalt API rate limit
+Switch to yt-dlp fallback (slower, but works)
+Groq Whisper fails
+Pre-cache transcript for demo reel
+LLM returns bad JSON
+Retry next model in cascade chain
+Vercel timeout (>5min)
+Split into 2 API routes, cache transcripts
+Instagram URL extraction fails
+Implement multiple regex patterns, debug in DevTools
+Wake Lock not working
+Graceful fallback, not critical for demo
+
+
+Environment Variables Template
+Create .env.local (do NOT commit):
+GROQ_API_KEY=gsk_xxxxx
+OPENROUTER_API_KEY=sk-or-xxxxx
+OPENAI_API_KEY=sk-xxxxx
+VERCEL_URL=https://your-deployment.vercel.app
+
+Submission Checklist
+[ ] Live Vercel URL
+[ ] GitHub repo (public, .env.local in .gitignore)
+[ ] README: "Built with Codex + GPT-5.6 (dev), OpenRouter free models (runtime)"
+[ ] /feedback session ID from Codex main build
+[ ] 2-3 min demo video (real Instagram share → recipe → Kitchen Mode)
+[ ] API keys working on live deployment
+
+Next Steps
+Right now: Copy types/recipe.ts, utils/regex.ts, utils/mockData.ts to your repo
+In 5 min: Each dev opens their target file and starts the Codex prompt
+In 2 hours: First integration test with mocks
+In 3 hours: Merge PWA + Dashboard
+In 3.5 hours: Live API test
+In 4 hours: Demo recorded and submitted
+You're good to go.
+
