@@ -7,9 +7,10 @@ interface RecipeModalProps {
   recipe: Recipe;
   onClose: () => void;
   onKitchenMode: () => void;
+  onDelete: () => void;
 }
 
-export default function RecipeModal({ recipe, onClose, onKitchenMode }: RecipeModalProps) {
+export default function RecipeModal({ recipe, onClose, onKitchenMode, onDelete }: RecipeModalProps) {
   const [checkedIngredients, setCheckedIngredients] = useState<Set<number>>(new Set());
 
   const toggleIngredient = (index: number) => {
@@ -76,6 +77,14 @@ export default function RecipeModal({ recipe, onClose, onKitchenMode }: RecipeMo
           className="w-full rounded-lg bg-terracotta py-3 font-semibold text-white"
         >
           Kitchen Mode
+        </button>
+
+        <button
+          type="button"
+          onClick={onDelete}
+          className="mt-3 w-full rounded-lg py-2 text-sm font-medium text-charcoal/50 hover:text-red-600"
+        >
+          Remove from Vault
         </button>
       </div>
     </div>

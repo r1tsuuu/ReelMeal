@@ -8,3 +8,4 @@ dist/
 build/
 *.pem
 .DS_Store
+*.tsbuildinfo
