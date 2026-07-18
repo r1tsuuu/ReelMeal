@@ -1,13 +1,15 @@
 'use client';
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { useIsFramed } from './useIsFramed';
+import { FrameContext, useDeviceFrame } from './FrameContext';
 import './DeviceFrame.css';
 
-// Overlays read this to know whether to anchor against the phone screen
-// (`absolute`, true) or the browser viewport (`fixed`, false = today's behavior).
-const FrameContext = createContext(false);
-export const useDeviceFrame = () => useContext(FrameContext);
+// Re-export so the public `@/components/DeviceFrame` index keeps the same
+// shape. The hook + context live in FrameContext.tsx (CSS-free) so that
+// components importing useDeviceFrame don't drag DeviceFrame.css into
+// non-browser test runners (tsx can't parse the stylesheet).
+export { useDeviceFrame };
 
 interface DeviceFrameProps {
   children: ReactNode;

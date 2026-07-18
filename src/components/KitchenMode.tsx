@@ -5,6 +5,13 @@ import { motion, AnimatePresence } from 'motion/react';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Recipe } from '@/types/recipe';
 import { clampStep, nextIndex, prevIndex, progressPercent, formatStepLabel } from './kitchenUtils';
+// NOTE: importing from @/components/DeviceFrame/FrameContext (not the package
+// root) because the root barrel re-exports the DeviceFrame component, whose
+// module imports DeviceFrame.css. tsx (used by `npm test`) can't parse CSS, so
+// pulling the stylesheet through KitchenMode breaks KitchenMode.test.mjs.
+// FrameContext.tsx is CSS-free. Webpack/Next.js is unaffected (CSS import works
+// in the browser bundle either way).
+import { useDeviceFrame } from '@/components/DeviceFrame/FrameContext';
 
 interface KitchenModeProps {
   recipe: Recipe;
@@ -17,6 +24,7 @@ export function KitchenMode({ recipe, onClose }: KitchenModeProps) {
   const [stepIndex, setStepIndex] = useState(0);
   const [dir, setDir] = useState(1);
   const [confirming, setConfirming] = useState(false);
+  const framed = useDeviceFrame();
   const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null);
 
   const totalSteps = recipe.instructions.length;
@@ -70,7 +78,7 @@ export function KitchenMode({ recipe, onClose }: KitchenModeProps) {
   // already a harmless no-op in this case (nextIndex/prevIndex return 0).
   if (totalSteps === 0) {
     return (
-      <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-6 bg-charcoal text-white">
+      <div className={`${framed ? 'absolute' : 'fixed'} inset-0 z-[60] flex flex-col items-center justify-center gap-6 bg-charcoal text-white`}>
         <p className="px-8 text-center text-3xl font-semibold text-sage">
           This recipe has no instructions yet.
         </p>
@@ -95,7 +103,7 @@ export function KitchenMode({ recipe, onClose }: KitchenModeProps) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[60] flex flex-col overflow-hidden bg-charcoal text-white"
+      className={`${framed ? 'absolute' : 'fixed'} inset-0 z-[60] flex flex-col overflow-hidden bg-charcoal text-white`}
     >
       {/* top bar */}
       <div className="flex flex-none items-center justify-between px-6 pt-8">
