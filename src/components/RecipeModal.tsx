@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ChevronLeft, Trash2, Check, Image as ImageIcon } from 'lucide-react';
 import { Recipe } from '@/types/recipe';
 import { useLongPress } from '@/hooks/useLongPress';
+import ConfirmDialog from './ConfirmDialog';
 
 interface RecipeModalProps {
   recipe: Recipe;
@@ -27,6 +28,7 @@ export function RecipeModal({
 }: RecipeModalProps) {
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [tab, setTab] = useState<Tab>('ingredients');
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const saved = recipe.collections.length > 0 || recipe.savedAt !== null;
 
@@ -78,11 +80,7 @@ export function RecipeModal({
           </button>
           <button
             type="button"
-            onClick={() => {
-              if (window.confirm(`Remove "${recipe.title}" from your vault? This can't be undone.`)) {
-                onDelete();
-              }
-            }}
+            onClick={() => setShowConfirm(true)}
             aria-label="Delete recipe"
             className="absolute right-4 top-4 flex size-11 items-center justify-center rounded-full bg-cream text-charcoal shadow-sm transition-colors hover:bg-white hover:text-terracotta"
           >
@@ -215,6 +213,19 @@ export function RecipeModal({
           </button>
         </div>
       </motion.div>
+
+      <ConfirmDialog
+        open={showConfirm}
+        title={'Remove "' + recipe.title + '" from your vault?'}
+        message="This can't be undone."
+        confirmLabel="Remove"
+        cancelLabel="Cancel"
+        onConfirm={() => {
+          setShowConfirm(false);
+          onDelete();
+        }}
+        onCancel={() => setShowConfirm(false)}
+      />
     </motion.div>
   );
 }
