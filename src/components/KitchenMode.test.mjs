@@ -23,7 +23,7 @@ globalThis.React = React;
 // self-contained and sidesteps any `@/` alias-resolution question.
 
 test('3-step recipe initial render: header, first instruction, hint, nav, close, progress width', async () => {
-  const { default: KitchenMode } = await import('./KitchenMode.tsx');
+  const { KitchenMode } = await import('./KitchenMode.tsx');
   const recipe = {
     id: 't1',
     title: 'T',
@@ -43,9 +43,8 @@ test('3-step recipe initial render: header, first instruction, hint, nav, close,
   assert.match(html, /Step 1 of 3/);
   // First instruction text rendered into the main step panel.
   assert.match(html, /Step one text\./);
-  // Hint is visible at step 0 with hintSeen=false (initial state — effects
-  // don't run under renderToStaticMarkup, so hintSeen stays false).
-  assert.match(html, /Tap right half/);
+  // Persistent mobile nav hint (always shown, not step-gated).
+  assert.match(html, /Tap left or right to navigate/);
   // Touch-zone aria-labels for the prev/next nav halves.
   assert.match(html, /Previous step/);
   assert.match(html, /Next step/);
@@ -58,7 +57,7 @@ test('3-step recipe initial render: header, first instruction, hint, nav, close,
 });
 
 test('empty instructions (B1 fix): renders safe empty state, no NaN/Infinity/Step 1 of 0', async () => {
-  const { default: KitchenMode } = await import('./KitchenMode.tsx');
+  const { KitchenMode } = await import('./KitchenMode.tsx');
   const recipe = {
     id: 't2',
     title: 'Empty',
@@ -82,13 +81,13 @@ test('empty instructions (B1 fix): renders safe empty state, no NaN/Infinity/Ste
   assert.doesNotMatch(html, /NaN/);
 });
 
-test('module shape: default export is a function', async () => {
+test('module shape: named KitchenMode export is a function', async () => {
   const mod = await import('./KitchenMode.tsx');
-  assert.equal(typeof mod.default, 'function');
+  assert.equal(typeof mod.KitchenMode, 'function');
 });
 
 test('progressPercent 1-of-5 -> 20% milestone flows to progress bar through real render', async () => {
-  const { default: KitchenMode } = await import('./KitchenMode.tsx');
+  const { KitchenMode } = await import('./KitchenMode.tsx');
   const recipe = {
     id: 't5',
     title: 'Five',
