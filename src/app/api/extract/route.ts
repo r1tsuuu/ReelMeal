@@ -1,7 +1,11 @@
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { dependencies } from './dependencies';
 import { DEMO_FALLBACK_TRANSCRIPTS } from '@/utils/demoFallbacks';
 
 // Vercel Hobby plan caps serverless functions at 60s (not 300s, which needs
-// Pro). The cascade below is trimmed to fit worst-case retries in that budget.
+// Pro). Retries/fallbacks below are trimmed to fit worst-case runs in that budget.
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
@@ -31,14 +35,36 @@ const OPENAI_CHAT_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
 const EXTRACTION_MAX_ATTEMPTS = 2;
 const EXTRACTION_RETRY_DELAY_MS = 1500;
 
-const recipeSystemPrompt = [
-  'You are a culinary analyst. Extract recipe details from an audio transcription.',
+// Vision fallback: one frame every 8s, capped at 6 frames, downscaled to keep
+// the OpenAI request payload (and its 60s-budget impact) reasonable.
+const FRAME_COUNT = 6;
+const FRAME_INTERVAL_SECONDS = 8;
+const FRAME_WIDTH = 512;
+
+const TEXT_ONLY_SYSTEM_PROMPT = [
+  'You are a culinary analyst. Extract recipe details from an audio transcription of a',
+  'cooking video, and its caption if provided.',
   'Return ONLY valid JSON with no markdown or code fences.',
   'Use exactly this schema:',
   '{"title":"string","servings":"string","prepTime":"string","cookTime":"string",',
   '"ingredients":[{"name":"string","amount":"string","unit":"string"}],',
   '"instructions":["string"]}.',
   'Use an empty string when a value is not stated, and do not invent ingredients or steps.',
+].join(' ');
+
+const VISION_SYSTEM_PROMPT = [
+  'You are a culinary analyst. The audio transcript and caption for this cooking video',
+  'do not contain enough spoken or written detail to extract a recipe on their own.',
+  'You are also given a handful of frames sampled across the video — use them to',
+  'visually identify the ingredients and cooking actions shown, and reconstruct your',
+  'best-effort recipe from what you can see and read (including any on-screen text).',
+  'Return ONLY valid JSON with no markdown or code fences.',
+  'Use exactly this schema:',
+  '{"title":"string","servings":"string","prepTime":"string","cookTime":"string",',
+  '"ingredients":[{"name":"string","amount":"string","unit":"string"}],',
+  '"instructions":["string"]}.',
+  'Give your best reasonable estimate for amounts/times that are not explicit — do not',
+  'leave fields empty just because an exact number was never stated.',
 ].join(' ');
 
 const mockRecipe: Recipe = {
@@ -96,78 +122,97 @@ function isRecipeDraft(value: unknown): value is RecipeDraft {
   )) && value.instructions.every(isString);
 }
 
+// A shape-valid draft can still be a correctly-empty non-answer — e.g. a
+// transcript that's song lyrics with no recipe content produces a draft that
+// passes isRecipeDraft() but has nothing in it. That's a signal to fall back
+// (to cached transcript / vision), not a usable result.
+function isUsefulDraft(draft: RecipeDraft): boolean {
+  return draft.title.trim().length > 0
+    && draft.ingredients.length > 0
+    && draft.instructions.length > 0;
+}
+
 function readableError(response: Response, defaultMessage: string) {
   return response.text()
     .then((body) => `${defaultMessage}${body ? `: ${body.slice(0, 300)}` : ''}`)
     .catch(() => defaultMessage);
 }
 
-// cobalt's public instance (api.cobalt.tools) explicitly disallows third-party
-// use without permission, so this always points at a self-hosted instance
-// (see cobalt/docker-compose.yml). Current cobalt (v10+) responds with
-// { status, url, filename } rather than a bare { url } — this parses that
-// contract, not the older /api/json shape.
-async function downloadAudio(sourceUrl: string): Promise<ArrayBuffer> {
-  const cobaltApiUrl = process.env.COBALT_API_URL;
-  if (!cobaltApiUrl) {
-    throw new PipelineError('COBALT_API_URL is not configured');
+function describeSubprocessError(error: unknown, defaultMessage: string): string {
+  if (isRecord(error)) {
+    const detail = isString(error.stderr) && error.stderr.trim()
+      ? error.stderr
+      : (isString(error.shortMessage) ? error.shortMessage : undefined)
+        ?? (isString(error.message) ? error.message : undefined);
+    if (detail) return `${defaultMessage}: ${detail.slice(0, 300)}`;
   }
-
-  const cobaltResponse = await fetch(cobaltApiUrl, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      url: sourceUrl,
-      downloadMode: 'audio',
-      audioFormat: 'mp3',
-    }),
-  });
-
-  let cobaltPayload: unknown;
-  try {
-    cobaltPayload = await cobaltResponse.json();
-  } catch {
-    throw new PipelineError(`Failed to download video: cobalt returned a non-JSON response (HTTP ${cobaltResponse.status})`);
-  }
-
-  if (!isRecord(cobaltPayload) || !isString(cobaltPayload.status)) {
-    throw new PipelineError('Failed to download video: unexpected cobalt response shape');
-  }
-
-  if (cobaltPayload.status === 'error') {
-    const code = isRecord(cobaltPayload.error) && isString(cobaltPayload.error.code)
-      ? cobaltPayload.error.code
-      : 'unknown_error';
-    throw new PipelineError(`Failed to download video: ${code}`);
-  }
-
-  if (cobaltPayload.status !== 'tunnel' && cobaltPayload.status !== 'redirect') {
-    throw new PipelineError(`Failed to download video: unsupported cobalt response status "${cobaltPayload.status}"`);
-  }
-
-  if (!isString(cobaltPayload.url) || !cobaltPayload.url) {
-    throw new PipelineError('Failed to download video: cobalt did not return a stream URL');
-  }
-
-  const audioResponse = await fetch(cobaltPayload.url);
-  if (!audioResponse.ok) {
-    throw new PipelineError(await readableError(audioResponse, 'Failed to download audio stream'));
-  }
-
-  return audioResponse.arrayBuffer();
+  return defaultMessage;
 }
 
-async function transcribeAudio(audio: ArrayBuffer): Promise<string> {
+type DownloadedMedia = {
+  workdir: string;
+  audioPath: string;
+  videoPath: string | null;
+  caption: string;
+};
+
+// Downloads via yt-dlp instead of a hosted media-downloading API: cobalt's
+// public instance explicitly disallows third-party use, and self-hosting it
+// just to re-solve what yt-dlp already solves added a whole extra service.
+// keepVideo is only requested for the vision fallback, so the fast/common
+// path stays audio-only.
+async function downloadMedia(sourceUrl: string, { keepVideo }: { keepVideo: boolean }): Promise<DownloadedMedia> {
+  if (!dependencies.ffmpegPath) {
+    throw new PipelineError('ffmpeg binary is not available in this environment');
+  }
+
+  const workdir = await dependencies.mkdtemp(path.join(tmpdir(), 'reelmeal-'));
+  const outputTemplate = path.join(workdir, 'media.%(ext)s');
+
+  try {
+    await dependencies.youtubedl(sourceUrl, {
+      output: outputTemplate,
+      extractAudio: true,
+      audioFormat: 'mp3',
+      writeInfoJson: true,
+      noPlaylist: true,
+      noWarnings: true,
+      ffmpegLocation: dependencies.ffmpegPath,
+      ...(keepVideo ? { keepVideo: true } : {}),
+    });
+  } catch (error) {
+    throw new PipelineError(describeSubprocessError(error, 'Failed to download video'));
+  }
+
+  let caption = '';
+  try {
+    const infoRaw = await dependencies.readFile(path.join(workdir, 'media.info.json'), 'utf-8');
+    const info: unknown = JSON.parse(infoRaw);
+    if (isRecord(info) && isString(info.description)) {
+      caption = info.description;
+    }
+  } catch {
+    // Caption is a nice-to-have for extraction context — not fatal if missing.
+  }
+
+  return {
+    workdir,
+    audioPath: path.join(workdir, 'media.mp3'),
+    videoPath: keepVideo ? path.join(workdir, 'media.mp4') : null,
+    caption,
+  };
+}
+
+async function transcribeAudio(audioPath: string): Promise<string> {
   const groqApiKey = process.env.GROQ_API_KEY;
   if (!groqApiKey) {
     throw new PipelineError('GROQ_API_KEY is not configured');
   }
 
+  const audioBuffer = await dependencies.readFile(audioPath);
+
   const formData = new FormData();
-  formData.append('file', new Blob([audio], { type: 'audio/mpeg' }), 'reel.mp3');
+  formData.append('file', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'reel.mp3');
   formData.append('model', 'whisper-large-v3');
   formData.append('response_format', 'json');
 
@@ -189,13 +234,66 @@ async function transcribeAudio(audio: ArrayBuffer): Promise<string> {
   return transcriptionPayload.text;
 }
 
+async function extractFrames(videoPath: string, workdir: string): Promise<string[]> {
+  if (!dependencies.ffmpegPath) {
+    throw new PipelineError('ffmpeg binary is not available in this environment');
+  }
+
+  const outputTemplate = path.join(workdir, 'frame_%02d.jpg');
+
+  try {
+    await dependencies.execFileAsync(dependencies.ffmpegPath, [
+      '-y',
+      '-i', videoPath,
+      '-vf', `fps=1/${FRAME_INTERVAL_SECONDS},scale=${FRAME_WIDTH}:-2`,
+      '-frames:v', String(FRAME_COUNT),
+      '-q:v', '4',
+      outputTemplate,
+    ]);
+  } catch (error) {
+    throw new PipelineError(describeSubprocessError(error, 'Failed to extract video frames'));
+  }
+
+  const frames: string[] = [];
+  for (let i = 1; i <= FRAME_COUNT; i += 1) {
+    const framePath = path.join(workdir, `frame_${String(i).padStart(2, '0')}.jpg`);
+    try {
+      await dependencies.readFile(framePath);
+      frames.push(framePath);
+    } catch {
+      break; // fewer frames exist than FRAME_COUNT for short videos — stop at the last real one
+    }
+  }
+
+  if (frames.length === 0) {
+    throw new PipelineError('Failed to extract video frames: no frames were produced');
+  }
+
+  return frames;
+}
+
+async function frameToDataUri(framePath: string): Promise<string> {
+  const bytes = await dependencies.readFile(framePath);
+  return `data:image/jpeg;base64,${bytes.toString('base64')}`;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+type ChatMessage = {
+  role: 'system' | 'user';
+  content: string | Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+  >;
+};
+
 // A single retry is enough to ride out a transient 429/5xx or an occasional
 // malformed-JSON response without eating too much of the 60s function budget.
-async function extractRecipe(transcript: string): Promise<{ draft: RecipeDraft; model: string }> {
+// Shared by both the text-only and vision extraction calls — only the
+// `messages` content differs between them.
+async function callExtractionModel(messages: ChatMessage[]): Promise<RecipeDraft> {
   const openaiApiKey = process.env.OPENAI_API_KEY;
   if (!openaiApiKey) {
     throw new PipelineError('OPENAI_API_KEY is not configured');
@@ -215,10 +313,7 @@ async function extractRecipe(transcript: string): Promise<{ draft: RecipeDraft; 
       body: JSON.stringify({
         model: 'gpt-4o',
         temperature: 0,
-        messages: [
-          { role: 'system', content: recipeSystemPrompt },
-          { role: 'user', content: `Transcription:\n${transcript}` },
-        ],
+        messages,
       }),
     });
 
@@ -261,27 +356,55 @@ async function extractRecipe(transcript: string): Promise<{ draft: RecipeDraft; 
       throw new PipelineError(lastError);
     }
 
-    return { draft: parsed, model: 'gpt-4o' };
+    if (!isUsefulDraft(parsed)) {
+      lastError = 'Failed to extract recipe with gpt-4o: model returned an empty recipe';
+      if (!isLastAttempt) continue;
+      throw new PipelineError(lastError);
+    }
+
+    return parsed;
   }
 
   throw new PipelineError(lastError);
 }
 
-async function getTranscript(sourceUrl: string): Promise<{ transcript: string; usedFallback: boolean }> {
+function extractRecipeFromText(transcript: string, caption: string): Promise<RecipeDraft> {
+  return callExtractionModel([
+    { role: 'system', content: TEXT_ONLY_SYSTEM_PROMPT },
+    { role: 'user', content: `Transcription:\n${transcript}\n\nCaption:\n${caption || '(none)'}` },
+  ]);
+}
+
+function extractRecipeFromVideo(transcript: string, caption: string, frameDataUris: string[]): Promise<RecipeDraft> {
+  return callExtractionModel([
+    { role: 'system', content: VISION_SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: `Transcription:\n${transcript || '(none)'}\n\nCaption:\n${caption || '(none)'}` },
+        ...frameDataUris.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+      ],
+    },
+  ]);
+}
+
+async function getTranscriptAndCaption(sourceUrl: string): Promise<{ transcript: string; caption: string; usedFallback: boolean; workdir: string | null }> {
   try {
-    const audio = await downloadAudio(sourceUrl);
-    const transcript = await transcribeAudio(audio);
-    return { transcript, usedFallback: false };
+    const media = await downloadMedia(sourceUrl, { keepVideo: false });
+    const transcript = await transcribeAudio(media.audioPath);
+    return { transcript, caption: media.caption, usedFallback: false, workdir: media.workdir };
   } catch (error) {
     const fallbackTranscript = DEMO_FALLBACK_TRANSCRIPTS[sourceUrl];
     if (fallbackTranscript) {
-      return { transcript: fallbackTranscript, usedFallback: true };
+      return { transcript: fallbackTranscript, caption: '', usedFallback: true, workdir: null };
     }
     throw error;
   }
 }
 
 export async function POST(request: Request) {
+  const workdirsToClean: string[] = [];
+
   try {
     const payload: unknown = await request.json();
     if (!isRecord(payload) || !isString(payload.url) || typeof payload.useMock !== 'boolean') {
@@ -297,22 +420,44 @@ export async function POST(request: Request) {
       return json({ success: true, recipe: mockRecipe, modelUsed: 'mock' });
     }
 
-    const { transcript, usedFallback } = await getTranscript(sourceUrl);
-    const { draft, model } = await extractRecipe(transcript);
+    const { transcript, caption, usedFallback, workdir } = await getTranscriptAndCaption(sourceUrl);
+    if (workdir) workdirsToClean.push(workdir);
+
+    let draft: RecipeDraft;
+    let modelTag: string;
+
+    try {
+      draft = await extractRecipeFromText(transcript, caption);
+      modelTag = usedFallback ? 'gpt-4o (cached transcript fallback)' : 'gpt-4o';
+    } catch (textExtractionError) {
+      // Transcript (and caption) didn't have enough to work with — fall back
+      // to sampling video frames and reasoning over them visually instead.
+      const media = await downloadMedia(sourceUrl, { keepVideo: true });
+      workdirsToClean.push(media.workdir);
+
+      if (!media.videoPath) {
+        throw textExtractionError;
+      }
+
+      const frames = await extractFrames(media.videoPath, media.workdir);
+      const frameDataUris = await Promise.all(frames.map(frameToDataUri));
+
+      draft = await extractRecipeFromVideo(transcript, media.caption || caption, frameDataUris);
+      modelTag = usedFallback ? 'gpt-4o (cached transcript + vision fallback)' : 'gpt-4o (vision fallback)';
+    }
+
     const recipe: Recipe = {
       ...draft,
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       sourceUrl,
       extractedAt: new Date().toISOString(),
     };
 
-    return json({
-      success: true,
-      recipe,
-      modelUsed: usedFallback ? `${model} (cached transcript fallback)` : model,
-    });
+    return json({ success: true, recipe, modelUsed: modelTag });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to extract recipe';
     return json({ success: false, error: message });
+  } finally {
+    await Promise.all(workdirsToClean.map((dir) => dependencies.rm(dir, { recursive: true, force: true }).catch(() => {})));
   }
 }
