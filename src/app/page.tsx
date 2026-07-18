@@ -18,6 +18,7 @@ import { CollectionsModal } from '@/components/CollectionsModal';
 import { KitchenMode } from '@/components/KitchenMode';
 import { DuplicateBanner } from '@/components/DuplicateBanner';
 import { AddRecipeSheet } from '@/components/AddRecipeSheet';
+import { DeviceFrame } from '@/components/DeviceFrame';
 
 type View = 'grid' | 'list';
 
@@ -178,17 +179,20 @@ function Dashboard() {
 
   if (!onboarded) {
     return (
-      <Onboarding
-        onFinish={() => {
-          window.localStorage.setItem(ONBOARDED_KEY, '1');
-          setOnboarded(true);
-        }}
-      />
+      <DeviceFrame>
+        <Onboarding
+          onFinish={() => {
+            window.localStorage.setItem(ONBOARDED_KEY, '1');
+            setOnboarded(true);
+          }}
+        />
+      </DeviceFrame>
     );
   }
 
   return (
-    <div className="min-h-dvh bg-cream text-charcoal">
+    <DeviceFrame>
+      <div className="min-h-dvh bg-cream text-charcoal">
       {/* Header */}
       <header className="sticky top-0 z-20 border-b border-charcoal/8 bg-cream/85 backdrop-blur-md">
         <div className="mx-auto max-w-5xl px-4 pb-3 pt-4">
@@ -424,6 +428,7 @@ function Dashboard() {
       </AnimatePresence>
 
       <Toaster position="top-center" richColors />
-    </div>
+      </div>
+    </DeviceFrame>
   );
 }
