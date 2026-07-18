@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { motion } from 'motion/react';
 import { Check, Plus } from 'lucide-react';
 import { Collection } from '@/types/recipe';
+import { useDeviceFrame } from '@/components/DeviceFrame';
 
 interface CollectionsModalProps {
   collections: Collection[];
@@ -22,6 +23,7 @@ export function CollectionsModal({
 }: CollectionsModalProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set(initialSelected));
   const [newName, setNewName] = useState('');
+  const framed = useDeviceFrame();
 
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -44,7 +46,7 @@ export function CollectionsModal({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       onClick={onCancel}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-charcoal/40 backdrop-blur-sm sm:items-center sm:p-4"
+      className={`${framed ? 'absolute' : 'fixed'} inset-0 z-50 flex items-end justify-center bg-charcoal/40 backdrop-blur-sm sm:items-center sm:p-4`}
     >
       <motion.div
         initial={{ y: '100%' }}

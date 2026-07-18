@@ -6,6 +6,7 @@ import { X, Link2, Loader2, Check, AlertTriangle, RotateCcw } from 'lucide-react
 import { APIResponsePayload, LoadingStage, Recipe } from '@/types/recipe';
 import { API_ENDPOINT } from '@/utils/constants';
 import { isValidInstagramUrl } from '@/utils/regex';
+import { useDeviceFrame } from '@/components/DeviceFrame';
 
 interface AddRecipeSheetProps {
   onClose: () => void;
@@ -41,6 +42,7 @@ export function AddRecipeSheet({ onClose, onExtracted, initialUrl = '' }: AddRec
   const [stage, setStage] = useState<LoadingStage>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const cancelledRef = useRef(false);
+  const framed = useDeviceFrame();
 
   const running = stage !== 'idle' && stage !== 'error';
   const activeIdx = running ? STAGE_ORDER.indexOf(stage as keyof typeof STAGE_LABELS) : -1;
@@ -107,7 +109,7 @@ export function AddRecipeSheet({ onClose, onExtracted, initialUrl = '' }: AddRec
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       onClick={running ? undefined : onClose}
-      className="fixed inset-0 z-50 flex items-end justify-center bg-charcoal/40 backdrop-blur-sm sm:items-center sm:p-4"
+      className={`${framed ? 'absolute' : 'fixed'} inset-0 z-50 flex items-end justify-center bg-charcoal/40 backdrop-blur-sm sm:items-center sm:p-4`}
     >
       <motion.div
         initial={{ y: '100%' }}
