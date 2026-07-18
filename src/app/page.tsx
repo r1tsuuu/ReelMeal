@@ -19,6 +19,7 @@ import { KitchenMode } from '@/components/KitchenMode';
 import { DuplicateBanner } from '@/components/DuplicateBanner';
 import { AddRecipeSheet } from '@/components/AddRecipeSheet';
 import { DeviceFrame } from '@/components/DeviceFrame';
+import { useDeviceFrame } from '@/components/DeviceFrame/FrameContext';
 
 type View = 'grid' | 'list';
 
@@ -33,6 +34,7 @@ export default function Page() {
 function Dashboard() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const framed = useDeviceFrame();
 
   const [readyToRender, setReadyToRender] = useState(false);
   const [onboarded, setOnboarded] = useState(false);
@@ -368,7 +370,7 @@ function Dashboard() {
         onClick={() => setAdding(true)}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.92 }}
-        className="fixed bottom-6 left-1/2 z-30 flex items-center gap-2 rounded-full bg-terracotta px-5 py-4 text-white shadow-[0_10px_30px_rgba(217,113,78,0.4)] transition-colors hover:bg-terracotta-dark"
+        className={`${framed ? 'absolute' : 'fixed'} bottom-6 left-1/2 z-30 flex items-center gap-2 rounded-full bg-terracotta px-5 py-4 text-white shadow-[0_10px_30px_rgba(217,113,78,0.4)] transition-colors hover:bg-terracotta-dark`}
         style={{ fontWeight: 600, x: '-50%' }}
       >
         <Plus className="size-5" />
