@@ -19,7 +19,7 @@ import { KitchenMode } from '@/components/KitchenMode';
 import { DuplicateBanner } from '@/components/DuplicateBanner';
 import { AddRecipeSheet } from '@/components/AddRecipeSheet';
 import { DeviceFrame } from '@/components/DeviceFrame';
-import { useDeviceFrame } from '@/components/DeviceFrame/FrameContext';
+import { useIsFramed } from '@/components/DeviceFrame/useIsFramed';
 
 type View = 'grid' | 'list';
 
@@ -34,7 +34,7 @@ export default function Page() {
 function Dashboard() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const framed = useDeviceFrame();
+  const framed = useIsFramed();
 
   const [readyToRender, setReadyToRender] = useState(false);
   const [onboarded, setOnboarded] = useState(false);
@@ -194,7 +194,7 @@ function Dashboard() {
 
   return (
     <DeviceFrame>
-      <div className="min-h-dvh bg-cream text-charcoal">
+      <div className={`${framed ? 'h-full overflow-y-auto' : 'min-h-dvh'} bg-cream text-charcoal`}>
       {/* Header */}
       <header className="sticky top-0 z-20 border-b border-charcoal/8 bg-cream/85 backdrop-blur-md">
         <div className="mx-auto max-w-5xl px-4 pb-3 pt-4">
@@ -429,7 +429,7 @@ function Dashboard() {
         )}
       </AnimatePresence>
 
-      <Toaster position="top-center" richColors />
+      <Toaster position="top-center" richColors style={framed ? { position: 'absolute' } : undefined} />
       </div>
     </DeviceFrame>
   );
