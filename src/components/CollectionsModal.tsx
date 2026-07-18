@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { motion } from 'motion/react';
 import { Check, Plus } from 'lucide-react';
 import { Collection } from '@/types/recipe';
-import { useDeviceFrame } from '@/components/DeviceFrame';
+// Leaf import (not the barrel) so this module doesn't transitively pull DeviceFrame.css, which tsx (npm test) can't parse.
+import { useDeviceFrame } from '@/components/DeviceFrame/FrameContext';
 
 interface CollectionsModalProps {
   collections: Collection[];

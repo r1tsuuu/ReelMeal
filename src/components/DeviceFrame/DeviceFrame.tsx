@@ -19,8 +19,8 @@ interface DeviceFrameProps {
 // children with zero added DOM, so the mobile experience is byte-identical to
 // pre-frame behavior. When wide, it wraps children in the iPhone shell.
 //
-// REMOVAL: delete src/components/DeviceFrame/, revert the two <DeviceFrame>
-// wrappers in page.tsx, drop the @import in globals.css. Nothing else to undo.
+// REMOVAL: delete src/components/DeviceFrame/, revert the two `<DeviceFrame>`
+// wrappers in page.tsx. Nothing else to undo.
 export function DeviceFrame({ children }: DeviceFrameProps) {
   const framed = useIsFramed();
 

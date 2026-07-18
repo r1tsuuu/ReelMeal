@@ -6,7 +6,8 @@ import { ChevronLeft, Trash2, Check, Image as ImageIcon } from 'lucide-react';
 import { Recipe } from '@/types/recipe';
 import { useLongPress } from '@/hooks/useLongPress';
 import ConfirmDialog from './ConfirmDialog';
-import { useDeviceFrame } from '@/components/DeviceFrame';
+// Leaf import (not the barrel) so this module doesn't transitively pull DeviceFrame.css, which tsx (npm test) can't parse.
+import { useDeviceFrame } from '@/components/DeviceFrame/FrameContext';
 
 interface RecipeModalProps {
   recipe: Recipe;

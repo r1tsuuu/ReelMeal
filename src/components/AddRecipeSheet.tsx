@@ -6,7 +6,8 @@ import { X, Link2, Loader2, Check, AlertTriangle, RotateCcw } from 'lucide-react
 import { APIResponsePayload, LoadingStage, Recipe } from '@/types/recipe';
 import { API_ENDPOINT } from '@/utils/constants';
 import { isValidInstagramUrl } from '@/utils/regex';
-import { useDeviceFrame } from '@/components/DeviceFrame';
+// Leaf import (not the barrel) so this module doesn't transitively pull DeviceFrame.css, which tsx (npm test) can't parse.
+import { useDeviceFrame } from '@/components/DeviceFrame/FrameContext';
 
 interface AddRecipeSheetProps {
   onClose: () => void;

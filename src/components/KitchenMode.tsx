@@ -5,12 +5,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Recipe } from '@/types/recipe';
 import { clampStep, nextIndex, prevIndex, progressPercent, formatStepLabel } from './kitchenUtils';
-// NOTE: importing from @/components/DeviceFrame/FrameContext (not the package
-// root) because the root barrel re-exports the DeviceFrame component, whose
-// module imports DeviceFrame.css. tsx (used by `npm test`) can't parse CSS, so
-// pulling the stylesheet through KitchenMode breaks KitchenMode.test.mjs.
-// FrameContext.tsx is CSS-free. Webpack/Next.js is unaffected (CSS import works
-// in the browser bundle either way).
+// Leaf import (not the barrel) so this module doesn't transitively pull DeviceFrame.css, which tsx (npm test) can't parse.
 import { useDeviceFrame } from '@/components/DeviceFrame/FrameContext';
 
 interface KitchenModeProps {
