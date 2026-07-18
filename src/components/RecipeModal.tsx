@@ -81,7 +81,11 @@ export default function RecipeModal({ recipe, onClose, onKitchenMode, onDelete }
 
         <button
           type="button"
-          onClick={onDelete}
+          onClick={() => {
+            if (window.confirm(`Remove \"${recipe.title}\" from your vault? This can't be undone.`)) {
+              onDelete();
+            }
+          }}
           className="mt-3 w-full rounded-lg py-2 text-sm font-medium text-charcoal/50 hover:text-red-600"
         >
           Remove from Vault
