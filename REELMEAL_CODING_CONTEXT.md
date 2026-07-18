@@ -380,7 +380,7 @@ COMPONENT STRUCTURE:
      Background: Cream #F5E6D3
    
    - Recipe Detail Modal (overlay):
-     Show if currentRecipe !== null
+      Show if currentRecipe !== null and !kitchenMode (modal hides while Kitchen Mode is active)
      Display: title, servings, prep/cook times, full ingredient list (checkboxes), instructions (numbered)
      Buttons: "Kitchen Mode" (toggle), "Close" (setCurrentRecipe(null))
      Optional: "Delete" button (remove from savedRecipes)
@@ -393,7 +393,6 @@ COMPONENT STRUCTURE:
 
 6. Kitchen Mode Trigger:
    When user clicks "Kitchen Mode" button:
-   - setCurrentRecipe(null) to close modal
    - setKitchenMode(true)
    - Show <KitchenMode recipe={currentRecipe} onClose={() => setKitchenMode(false)} />
 
@@ -422,7 +421,7 @@ COMPONENT STRUCTURE:
       <RecipeCard recipe={recipe} onClick={() => setCurrentRecipe(recipe)} />
     )}
   </div>
-  {currentRecipe && (
+  {currentRecipe && !kitchenMode && (
     <RecipeModal recipe={currentRecipe} onClose={() => setCurrentRecipe(null)} onKitchenMode={() => setKitchenMode(true)} />
   )}
   {kitchenMode && currentRecipe && (
