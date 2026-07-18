@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useId, useRef } from 'react';
+import { useDeviceFrame } from '@/components/DeviceFrame';
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -29,6 +30,8 @@ export default function ConfirmDialog({
 }: ConfirmDialogProps) {
   const titleId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
+
+  const framed = useDeviceFrame();
 
   // Focus the least-destructive action on open so an accidental Enter does
   // not trigger the destructive confirm (standard a11y guidance). Gated on
@@ -60,7 +63,7 @@ export default function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+      className={`${framed ? 'absolute' : 'fixed'} inset-0 z-[60] flex items-center justify-center bg-black/50 p-4`}
       onClick={(e) => {
         // Stop the click from bubbling into a parent overlay's backdrop handler
         // (e.g. RecipeModal's onClick={onClose}) so dismissing this dialog does

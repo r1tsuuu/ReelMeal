@@ -6,6 +6,7 @@ import { ChevronLeft, Trash2, Check, Image as ImageIcon } from 'lucide-react';
 import { Recipe } from '@/types/recipe';
 import { useLongPress } from '@/hooks/useLongPress';
 import ConfirmDialog from './ConfirmDialog';
+import { useDeviceFrame } from '@/components/DeviceFrame';
 
 interface RecipeModalProps {
   recipe: Recipe;
@@ -29,6 +30,8 @@ export function RecipeModal({
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [tab, setTab] = useState<Tab>('ingredients');
   const [showConfirm, setShowConfirm] = useState(false);
+
+  const framed = useDeviceFrame();
 
   const saved = recipe.collections.length > 0 || recipe.savedAt !== null;
 
@@ -54,7 +57,7 @@ export function RecipeModal({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       onClick={onClose}
-      className="fixed inset-0 z-40 flex items-stretch justify-center bg-charcoal/50 sm:items-center sm:p-4 sm:backdrop-blur-sm"
+      className={`${framed ? 'absolute' : 'fixed'} inset-0 z-40 flex items-stretch justify-center bg-charcoal/50 sm:items-center sm:p-4 sm:backdrop-blur-sm`}
     >
       <motion.div
         initial={{ y: '100%' }}
