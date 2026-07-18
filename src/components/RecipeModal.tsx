@@ -78,7 +78,11 @@ export function RecipeModal({
           </button>
           <button
             type="button"
-            onClick={onDelete}
+            onClick={() => {
+              if (window.confirm(`Remove "${recipe.title}" from your vault? This can't be undone.`)) {
+                onDelete();
+              }
+            }}
             aria-label="Delete recipe"
             className="absolute right-4 top-4 flex size-11 items-center justify-center rounded-full bg-cream text-charcoal shadow-sm transition-colors hover:bg-white hover:text-terracotta"
           >
