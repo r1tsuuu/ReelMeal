@@ -289,7 +289,7 @@ export async function POST(request: Request) {
     }
 
     const sourceUrl = payload.url.trim();
-    if (!/^https?:\/\/(?:www\.)?instagram\.com\/(?:reel|p)\//i.test(sourceUrl)) {
+    if (!/^https?:\/\/(?:www\.)?instagram\.com\/(?:reels?|p)\//i.test(sourceUrl)) {
       throw new PipelineError('Please provide a valid Instagram reel or post URL');
     }
 

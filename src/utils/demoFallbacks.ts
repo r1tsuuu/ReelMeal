@@ -8,5 +8,7 @@
 // log it in transcribeAudio, or check your terminal/Vercel function logs),
 // and add it here keyed by the exact source URL you'll paste live.
 export const DEMO_FALLBACK_TRANSCRIPTS: Record<string, string> = {
-  // 'https://www.instagram.com/reel/XXXXXXXXXXX/': 'transcript captured during rehearsal...',
+  // Demo reel — fill in once a real (non-mock) run against this URL has
+  // captured its transcript (requires cobalt/tunnel to be up).
+  // 'https://www.instagram.com/reels/DYrUc81IjAH/': '',
 };
