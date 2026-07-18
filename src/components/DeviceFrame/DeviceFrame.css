@@ -1,0 +1,93 @@
+/* Desktop iPhone frame — temporary feature. See docs/superpowers/specs/2026-07-18-desktop-iphone-frame-design.md */
+
+@media (min-width: 768px) {
+  /* Ambient backdrop: dark with a soft terracotta glow centered on the phone.
+     Fade-in masks the one-frame detection flash on desktop. */
+  .df-ambient {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background:
+      radial-gradient(circle at 50% 40%, rgba(217, 113, 78, 0.18), transparent 55%),
+      radial-gradient(circle at 30% 75%, rgba(111, 138, 95, 0.10), transparent 50%),
+      #0d0d10;
+    box-shadow: inset 0 0 200px rgba(0, 0, 0, 0.7); /* vignette */
+    animation: df-fade-in 200ms ease-out;
+  }
+
+  @keyframes df-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  /* The device body. Portrait iPhone proportions (390x844 logical), capped to
+     90vh so it fits on short laptop screens. */
+  .df-phone {
+    position: relative;
+    width: 390px;
+    height: min(844px, 90vh);
+    background: linear-gradient(145deg, #1a1a1a, #000);
+    border-radius: 46px;
+    padding: 12px; /* the bezel */
+    box-shadow:
+      0 30px 80px rgba(0, 0, 0, 0.75),
+      0 0 0 2px #2a2a2a,
+      inset 0 0 2px #3a3a3a;
+  }
+
+  /* Dynamic Island pill, centered at the top of the screen. z-index keeps it
+     above app content but below overlays (overlays start at z-40). */
+  .df-island {
+    position: absolute;
+    top: 11px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100px;
+    height: 30px;
+    background: #000;
+    border-radius: 18px;
+    z-index: 35; /* below RecipeModal (z-40) so modals cover it when open */
+  }
+
+  /* Side buttons — decorative silhouettes on the device edges. */
+  .df-phone::before {
+    /* left edge: volume buttons (ring/silent switch + two volume keys) */
+    content: '';
+    position: absolute;
+    left: -3px;
+    top: 130px;
+    width: 3px;
+    height: 110px;
+    background: #0a0a0a;
+    border-radius: 2px 0 0 2px;
+    box-shadow:
+      0 130px 0 0 #0a0a0a; /* crude: a second segment lower down */
+  }
+
+  .df-phone::after {
+    /* right edge: power button */
+    content: '';
+    position: absolute;
+    right: -3px;
+    top: 170px;
+    width: 3px;
+    height: 90px;
+    background: #0a0a0a;
+    border-radius: 0 2px 2px 0;
+  }
+
+  /* The screen — the app and all its overlays live in here. `position: relative`
+     makes it the anchoring ancestor for overlays that switch to `absolute`.
+     `overflow: hidden` clips app content to the rounded screen. */
+  .df-screen {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background: var(--cream);
+    border-radius: 36px;
+    overflow: hidden;
+  }
+}
