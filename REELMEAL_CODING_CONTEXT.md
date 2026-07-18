@@ -7,6 +7,12 @@
 
 ---
 
+## 📌 Source of Truth (Canonical Spec)
+
+> **This is the single source of truth for ReelMeal.** It supersedes `DEV_SPECS_WITH_TASKS.txt` (now reduced to a pointer). Where this doc and the code on `main` disagree on a **settled** decision, `main` is authoritative — update this doc to match. Any **new** contract decision (env var, provider, schema change) must update this doc **in the same PR** that introduces it. This is a *contract* (what we agreed to build), not a *status tracker* (what's done / not done) — keep progress out of here.
+
+---
+
 ## ⚡ Quick Pitch
 
 > Turn reels into meals. Share a cooking video from Instagram, TikTok, or YouTube → ReelMeal extracts ingredients and step-by-step instructions instantly.
@@ -82,7 +88,7 @@ export interface Ingredient {
 }
 
 export interface Recipe {
-  id: string;           // MD5 hash of URL
+  id: string;           // Server-generated UUID (set by /api/extract; do not regenerate client-side)
   title: string;
   sourceUrl: string;
   extractedAt: string;  // ISO 8601
@@ -195,12 +201,14 @@ export const LOADING_MESSAGES = {
 
 **Target File:** `src/app/api/extract/route.ts`
 
-**Your Job:** Ingest Instagram URL → fetch video via Cobalt → transcribe with Groq → extract structured recipe with LLM → return clean JSON under 30 seconds.
+**Your Job:** Ingest Instagram URL → fetch audio via the yt-dlp download service → transcribe with Groq → extract structured recipe with LLM → return clean JSON under 30 seconds.
 
 **Tech Stack:**
-- Cobalt API (free video download, no login needed)
+- yt-dlp (audio download), hosted as a standalone HTTP service — see the ⚠️ download-layer note below
 - Groq Whisper Large v3 (fast transcription)
-- OpenAI GPT-4o (LLM extraction, since you have the key)
+- OpenRouter free LLMs (primary extraction): `llama-3.3-70b-instruct:free` → `qwen-2.5-72b-instruct:free`, then **GPT-4o** as a paid fallback. The route tries each in order and skips any model whose API key isn't configured.
+
+> **⚠️ Download layer — yt-dlp runs in its own container, NOT inside `route.ts`.** ReelMeal originally used the Cobalt HTTP API, which was **shut down on 2024-11-11** (v7 deprecated — see [imputnet/cobalt#860](https://github.com/imputnet/cobalt/discussions/860)). The replacement is **yt-dlp**, but yt-dlp is a *local CLI binary*, not an HTTP API, so **it cannot run inside Vercel serverless** (Lambda has no yt-dlp binary, a tight deployment-size budget, and unreliable binary execution). **Decision — Path A:** host yt-dlp as a tiny standalone service (Render / Railway / Fly.io free tier) exposing ONE HTTP endpoint that mimics the old Cobalt contract (`POST { url, downloadMode, audioFormat } → { url: <audio stream> }`). Reasons: (1) `route.ts` stays a plain HTTP call — only the endpoint URL changes, so existing code **and tests keep working**; (2) the heavy binary lives off Vercel, so the **live deploy actually works**; (3) it's trivially mockable, same as Cobalt was. The `downloadAudio(sourceUrl) → ArrayBuffer of mp3` contract is unchanged. Dev 1 swaps the old hardcoded Cobalt URL for the `DOWNLOAD_SERVICE_URL` env var.
 
 **Codex Prompt (Copy-Paste This):**
 
@@ -208,7 +216,7 @@ export const LOADING_MESSAGES = {
 Create src/app/api/extract/route.ts as a Next.js 14 App Router route handler.
 
 EXPORTS:
-export const maxDuration = 300;  // 5-minute Vercel timeout
+export const maxDuration = 60;  // Vercel Hobby caps serverless at 60s (Pro = 300s)
 export const dynamic = 'force-dynamic';
 
 HANDLER LOGIC:
@@ -219,11 +227,12 @@ HANDLER LOGIC:
    - Return immediately: { success: true, recipe: mockRecipe, modelUsed: 'mock' }
 
 3. If useMock === false:
-   - Step A: Call Cobalt API
-     POST to https://api.cobalt.tools/api/json
+   - Step A: Call the yt-dlp download service (HTTP endpoint hosted off Vercel — see the ⚠️ note above)
+     POST to ${DOWNLOAD_SERVICE_URL}   (e.g. https://reelmeal-dl.onrender.com/api/json)
      Headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }
      Body: { "url": "INPUT_URL", "downloadMode": "audio", "audioFormat": "mp3" }
-     Extract response.url (direct audio stream link)
+     The service runs yt-dlp and returns Cobalt-compatible JSON: { "url": "<direct audio stream link>" }
+     (Same I/O shape as Cobalt → route.ts is unchanged except for the endpoint URL.)
    
    - Step B: Transcribe audio with Groq Whisper
      Fetch the audio stream to ArrayBuffer
@@ -233,26 +242,34 @@ HANDLER LOGIC:
      Body: FormData { file: audioBlob, model: 'whisper-large-v3', response_format: 'json' }
      Extract response.text (transcript string)
    
-   - Step C: Extract recipe with OpenAI GPT
-     Call https://api.openai.com/v1/chat/completions
-     Headers: { 'Authorization': 'Bearer ${OPENAI_API_KEY}', 'Content-Type': 'application/json' }
-     System Prompt: "You are a culinary analyst. Extract recipe details from audio transcription. Return ONLY valid JSON (no markdown code blocks) matching: {title: string, servings: string, prepTime: string, cookTime: string, ingredients: [{name, amount, unit}], instructions: [string[]]}"
-     User Prompt: "Transcription: [INSERT_TRANSCRIPT]"
-     Parse response.choices[0].message.content as JSON
-     If JSON parsing fails, retry once or return error
+   - Step C: Extract recipe via LLM CASCADE (try in order; skip any model whose key is missing)
+       Candidates:
+         1. OpenRouter  meta-llama/llama-3.3-70b-instruct:free   (needs OPENROUTER_API_KEY)
+         2. OpenRouter  qwen/qwen-2.5-72b-instruct:free           (needs OPENROUTER_API_KEY)
+         3. OpenAI      gpt-4o                                     (needs OPENAI_API_KEY — paid fallback)
+       For each candidate:
+         Endpoint:  OpenRouter → https://openrouter.ai/api/v1/chat/completions
+                    OpenAI     → https://api.openai.com/v1/chat/completions
+         Headers:   { 'Authorization': 'Bearer ${KEY}', 'Content-Type': 'application/json' }
+         Body:      { model, temperature: 0, messages: [ systemPrompt, userPrompt ] }
+         System Prompt: "You are a culinary analyst. Extract recipe details from an audio transcription. Return ONLY valid JSON (no markdown fences) matching: {title, servings, prepTime, cookTime, ingredients: [{name, amount, unit}], instructions: [string]}. Use empty strings for unstated values; do not invent."
+         User Prompt:   "Transcription:\n[INSERT_TRANSCRIPT]"
+         Parse response.choices[0].message.content as STRICT JSON and validate the recipe shape
+         On 429 / non-OK / invalid JSON → continue to the next candidate
+       Return the first valid recipe + the model string that produced it
    
    - Step D: Validate & return
      Ensure all required fields present
-     Add id: crypto.randomUUID() or MD5(url)
+     Add id: crypto.randomUUID()   (server-generated; the frontend uses it as-is)
      Add sourceUrl: INPUT_URL
      Add extractedAt: new Date().toISOString()
-     Return: { success: true, recipe: OBJECT, modelUsed: 'openai' }
+     Return: { success: true, recipe: OBJECT, modelUsed: <the model that succeeded> }
 
 4. ERROR HANDLING:
    Wrap all steps in try-catch
-   If Cobalt fails: return { success: false, error: "Failed to download video" }
+   If the download service fails: return { success: false, error: "Failed to download video" }
    If Groq fails: return { success: false, error: "Failed to transcribe audio" }
-   If OpenAI fails: return { success: false, error: "Failed to extract recipe" }
+   If ALL cascade candidates fail: return { success: false, error: "Failed to extract recipe" }
    If JSON parse fails: return { success: false, error: "Invalid recipe format" }
    Return HTTP 200 with error object (not 500) so frontend can handle gracefully
 
@@ -265,14 +282,17 @@ HANDLER LOGIC:
 **Environment Variables (Add to `.env.local`):**
 ```
 GROQ_API_KEY=your_groq_key_here
-OPENAI_API_KEY=your_openai_key_here
+OPENROUTER_API_KEY=your_openrouter_key_here   # primary LLM (free models)
+OPENAI_API_KEY=your_openai_key_here           # optional paid fallback
+DOWNLOAD_SERVICE_URL=https://your-ytdlp-service.onrender.com/api/json   # yt-dlp container (replaces Cobalt)
 ```
 
 **Testing Checklist:**
 - [ ] Mock mode returns mockRecipe instantly
 - [ ] Real mode handles 404 URL gracefully
 - [ ] JSON parsing doesn't crash on malformed response
-- [ ] Response time under 30s
+- [ ] Response time under 30s (hard ceiling: 60s on Vercel Hobby)
+- [ ] Cascade skips a model on 429 / bad JSON and falls through to the next
 - [ ] localStorage doesn't blow up with large responses
 
 **Integration Point:**
@@ -328,12 +348,18 @@ COMPONENT STRUCTURE:
    a) Validate URL contains 'instagram.com' (basic check)
    b) Set stage to 'fetching_stream', clear errorMessage
    c) Fetch '/api/extract' via POST with { url: inputUrl, useMock: false }
-   d) On success:
-      - Create new Recipe object with id, extractedAt
-      - Unshift to savedRecipes (add to front)
-      - Persist to localStorage: JSON.stringify(savedRecipes)
-      - Reset inputUrl to empty string
-      - Set stage to 'idle'
+   d) On success — use response.recipe AS-IS (id + extractedAt are server-generated; do NOT regenerate them):
+      - DUPLICATE CHECK before saving: look up savedRecipes for an entry whose
+        sourceUrl === response.recipe.sourceUrl
+          • No match  → unshift the new recipe to the front, persist, reset inputUrl, set stage 'idle'
+          • Match found → do NOT auto-save. Show an overwrite dialog:
+              Title:  "Recipe already saved"
+              Body:   "You saved this recipe on {existing.extractedAt}. Extract it again?"
+              Buttons:
+                [ Overwrite old ]  → replace the existing entry with the new recipe, persist, close, stage 'idle'
+                [ Keep existing ]  → discard the new recipe, close, stage 'idle'
+                [ View saved ]     → open the existing recipe in the modal so the user can compare first
+      - Persist to localStorage ('reelmeal-vault') after any change
    e) On error:
       - Set stage to 'error'
       - Set errorMessage to response.error
@@ -861,7 +887,9 @@ module.exports = {
 ### `.env.local` (DO NOT COMMIT)
 ```
 GROQ_API_KEY=gsk_your_groq_key_here
+OPENROUTER_API_KEY=sk-or-your_openrouter_key_here
 OPENAI_API_KEY=sk-your_openai_key_here
+DOWNLOAD_SERVICE_URL=https://your-ytdlp-service.onrender.com/api/json
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
@@ -908,7 +936,7 @@ Test: Click "Kitchen Mode" on card, verify full screen, test arrow keys
 **Checkpoint 4: Dev 1 Goes Live (15 min)**
 ```bash
 git add src/app/api/extract/route.ts .env.local
-git commit -m "feat: API pipeline - Cobalt + Groq + OpenAI"
+git commit -m "feat: API pipeline - yt-dlp download service + Groq + OpenRouter"
 ```
 Deploy to Vercel: `vercel deploy --prod`
 
@@ -932,7 +960,7 @@ Deploy to Vercel: `vercel deploy --prod`
 - Recipe extraction in progress (loading states)
 - Recipe card displays with ingredients + instructions
 - Toggle Kitchen Mode, show step navigation
-- Mention: "Built with Codex + GPT-5.6 (dev), OpenAI + Groq (runtime)"
+- Mention: "Built with Codex + GPT-5.6 (dev) | Groq + OpenRouter free models (runtime), OpenAI fallback"
 
 ### Hour 4:00 - Submit
 
@@ -948,9 +976,11 @@ Deploy to Vercel: `vercel deploy --prod`
 
 | Problem | Fix |
 |---------|-----|
-| Cobalt API 429 (rate limit) | Add retry logic with exponential backoff (3s, 6s, 12s) |
+| yt-dlp service down / rate-limited | Retry with backoff (3s, 6s, 12s); for the demo, pre-cache 2-3 transcripted reels |
+| Instagram blocks the download (auth wall) | yt-dlp may need cookies/login; fall back to a cached demo reel |
 | Groq Whisper times out | Pre-extract 2-3 demo reels, cache in localStorage |
-| OpenAI API key invalid | Verify key format, check billing, test endpoint separately |
+| Pipeline exceeds 60s (Vercel Hobby cap) | Trim the cascade to fewer models, cache transcripts, or upgrade to Pro (300s) |
+| OpenRouter / OpenAI key invalid | Cascade skips the bad provider and falls through to the next; verify key + billing in the Vercel dashboard |
 | localStorage full | Limit savedRecipes to last 20 items, implement pagination |
 | Wake Lock denied | Graceful fallback (not critical for demo) |
 | Instagram URL extraction fails | Test regex separately, add multiple URL pattern variants |
@@ -992,7 +1022,9 @@ Output: { success: boolean, recipe?: Recipe, error?: string }
 ### Environment Variables
 ```
 GROQ_API_KEY=...
-OPENAI_API_KEY=...
+OPENROUTER_API_KEY=...   # primary LLM
+OPENAI_API_KEY=...        # optional paid fallback
+DOWNLOAD_SERVICE_URL=...  # yt-dlp container (replaces Cobalt)
 NEXT_PUBLIC_APP_URL=... (optional, for debugging)
 ```
 
@@ -1014,7 +1046,7 @@ Charcoal:   #121212 (dark text/kitchen mode bg)
 ✅ Kitchen Mode toggle works, full screen, step navigation responsive  
 ✅ localStorage persists recipes across page refreshes  
 ✅ 2-3 min demo video recorded and linked  
-✅ README explains "Codex + GPT-5.6 (dev) | Groq + OpenAI (runtime)"  
+✅ README explains "Codex + GPT-5.6 (dev) | Groq + OpenRouter free models (runtime), OpenAI fallback"  
 ✅ GitHub repo public, .env.local in .gitignore  
 
 ---
