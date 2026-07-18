@@ -1,3 +1,5 @@
+import { DEMO_FALLBACK_TRANSCRIPTS } from '@/utils/demoFallbacks';
+
 // Vercel Hobby plan caps serverless functions at 60s (not 300s, which needs
 // Pro). The cascade below is trimmed to fit worst-case retries in that budget.
 export const maxDuration = 60;
@@ -23,21 +25,11 @@ type Recipe = {
 
 type RecipeDraft = Omit<Recipe, 'id' | 'sourceUrl' | 'extractedAt'>;
 
-type ModelCandidate = {
-  provider: 'openrouter' | 'openai';
-  model: string;
-};
-
-const COBALT_ENDPOINT = 'https://api.cobalt.tools/api/json';
 const GROQ_TRANSCRIPTION_ENDPOINT = 'https://api.groq.com/openai/v1/audio/transcriptions';
-const OPENROUTER_CHAT_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 const OPENAI_CHAT_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
 
-const modelCandidates: ModelCandidate[] = [
-  { provider: 'openrouter', model: 'meta-llama/llama-3.3-70b-instruct:free' },
-  { provider: 'openrouter', model: 'qwen/qwen-2.5-72b-instruct:free' },
-  { provider: 'openai', model: 'gpt-4o' },
-];
+const EXTRACTION_MAX_ATTEMPTS = 2;
+const EXTRACTION_RETRY_DELAY_MS = 1500;
 
 const recipeSystemPrompt = [
   'You are a culinary analyst. Extract recipe details from an audio transcription.',
@@ -110,8 +102,18 @@ function readableError(response: Response, defaultMessage: string) {
     .catch(() => defaultMessage);
 }
 
+// cobalt's public instance (api.cobalt.tools) explicitly disallows third-party
+// use without permission, so this always points at a self-hosted instance
+// (see cobalt/docker-compose.yml). Current cobalt (v10+) responds with
+// { status, url, filename } rather than a bare { url } — this parses that
+// contract, not the older /api/json shape.
 async function downloadAudio(sourceUrl: string): Promise<ArrayBuffer> {
-  const cobaltResponse = await fetch(COBALT_ENDPOINT, {
+  const cobaltApiUrl = process.env.COBALT_API_URL;
+  if (!cobaltApiUrl) {
+    throw new PipelineError('COBALT_API_URL is not configured');
+  }
+
+  const cobaltResponse = await fetch(cobaltApiUrl, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
@@ -124,13 +126,30 @@ async function downloadAudio(sourceUrl: string): Promise<ArrayBuffer> {
     }),
   });
 
-  if (!cobaltResponse.ok) {
-    throw new PipelineError(await readableError(cobaltResponse, 'Failed to download video'));
+  let cobaltPayload: unknown;
+  try {
+    cobaltPayload = await cobaltResponse.json();
+  } catch {
+    throw new PipelineError(`Failed to download video: cobalt returned a non-JSON response (HTTP ${cobaltResponse.status})`);
   }
 
-  const cobaltPayload: unknown = await cobaltResponse.json();
-  if (!isRecord(cobaltPayload) || !isString(cobaltPayload.url) || !cobaltPayload.url) {
-    throw new PipelineError('Failed to download video: Cobalt did not return an audio stream');
+  if (!isRecord(cobaltPayload) || !isString(cobaltPayload.status)) {
+    throw new PipelineError('Failed to download video: unexpected cobalt response shape');
+  }
+
+  if (cobaltPayload.status === 'error') {
+    const code = isRecord(cobaltPayload.error) && isString(cobaltPayload.error.code)
+      ? cobaltPayload.error.code
+      : 'unknown_error';
+    throw new PipelineError(`Failed to download video: ${code}`);
+  }
+
+  if (cobaltPayload.status !== 'tunnel' && cobaltPayload.status !== 'redirect') {
+    throw new PipelineError(`Failed to download video: unsupported cobalt response status "${cobaltPayload.status}"`);
+  }
+
+  if (!isString(cobaltPayload.url) || !cobaltPayload.url) {
+    throw new PipelineError('Failed to download video: cobalt did not return a stream URL');
   }
 
   const audioResponse = await fetch(cobaltPayload.url);
@@ -170,84 +189,96 @@ async function transcribeAudio(audio: ArrayBuffer): Promise<string> {
   return transcriptionPayload.text;
 }
 
-function apiKeyFor(candidate: ModelCandidate): string | undefined {
-  return candidate.provider === 'openrouter'
-    ? process.env.OPENROUTER_API_KEY
-    : process.env.OPENAI_API_KEY;
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function endpointFor(candidate: ModelCandidate): string {
-  return candidate.provider === 'openrouter' ? OPENROUTER_CHAT_ENDPOINT : OPENAI_CHAT_ENDPOINT;
-}
-
+// A single retry is enough to ride out a transient 429/5xx or an occasional
+// malformed-JSON response without eating too much of the 60s function budget.
 async function extractRecipe(transcript: string): Promise<{ draft: RecipeDraft; model: string }> {
-  let lastError = 'Failed to extract recipe';
-  let configuredModelFound = false;
-
-  for (const candidate of modelCandidates) {
-    const apiKey = apiKeyFor(candidate);
-    if (!apiKey) continue;
-    configuredModelFound = true;
-
-    try {
-      const response = await fetch(endpointFor(candidate), {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: candidate.model,
-          temperature: 0,
-          messages: [
-            { role: 'system', content: recipeSystemPrompt },
-            { role: 'user', content: `Transcription:\n${transcript}` },
-          ],
-        }),
-      });
-
-      if (!response.ok) {
-        lastError = await readableError(response, `Failed to extract recipe with ${candidate.model}`);
-        continue;
-      }
-
-      const payload: unknown = await response.json();
-      const content = isRecord(payload)
-        && Array.isArray(payload.choices)
-        && isRecord(payload.choices[0])
-        && isRecord(payload.choices[0].message)
-        ? payload.choices[0].message.content
-        : undefined;
-
-      if (!isString(content)) {
-        lastError = `Failed to extract recipe with ${candidate.model}: no response content`;
-        continue;
-      }
-
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(content);
-      } catch {
-        lastError = `Failed to extract recipe with ${candidate.model}: invalid recipe JSON`;
-        continue;
-      }
-
-      if (!isRecipeDraft(parsed)) {
-        lastError = `Failed to extract recipe with ${candidate.model}: invalid recipe format`;
-        continue;
-      }
-
-      return { draft: parsed, model: candidate.model };
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : `Failed to extract recipe with ${candidate.model}`;
-    }
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  if (!openaiApiKey) {
+    throw new PipelineError('OPENAI_API_KEY is not configured');
   }
 
-  if (!configuredModelFound) {
-    throw new PipelineError('OPENROUTER_API_KEY or OPENAI_API_KEY is not configured');
+  let lastError = 'Failed to extract recipe with gpt-4o';
+
+  for (let attempt = 1; attempt <= EXTRACTION_MAX_ATTEMPTS; attempt += 1) {
+    const isLastAttempt = attempt === EXTRACTION_MAX_ATTEMPTS;
+
+    const response = await fetch(OPENAI_CHAT_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${openaiApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        temperature: 0,
+        messages: [
+          { role: 'system', content: recipeSystemPrompt },
+          { role: 'user', content: `Transcription:\n${transcript}` },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      lastError = await readableError(response, 'Failed to extract recipe with gpt-4o');
+      const isTransient = response.status === 429 || response.status >= 500;
+      if (isTransient && !isLastAttempt) {
+        await delay(EXTRACTION_RETRY_DELAY_MS * attempt);
+        continue;
+      }
+      throw new PipelineError(lastError);
+    }
+
+    const payload: unknown = await response.json();
+    const content = isRecord(payload)
+      && Array.isArray(payload.choices)
+      && isRecord(payload.choices[0])
+      && isRecord(payload.choices[0].message)
+      ? payload.choices[0].message.content
+      : undefined;
+
+    if (!isString(content)) {
+      lastError = 'Failed to extract recipe with gpt-4o: no response content';
+      if (!isLastAttempt) continue;
+      throw new PipelineError(lastError);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      lastError = 'Failed to extract recipe with gpt-4o: invalid recipe JSON';
+      if (!isLastAttempt) continue;
+      throw new PipelineError(lastError);
+    }
+
+    if (!isRecipeDraft(parsed)) {
+      lastError = 'Failed to extract recipe with gpt-4o: invalid recipe format';
+      if (!isLastAttempt) continue;
+      throw new PipelineError(lastError);
+    }
+
+    return { draft: parsed, model: 'gpt-4o' };
   }
 
   throw new PipelineError(lastError);
+}
+
+async function getTranscript(sourceUrl: string): Promise<{ transcript: string; usedFallback: boolean }> {
+  try {
+    const audio = await downloadAudio(sourceUrl);
+    const transcript = await transcribeAudio(audio);
+    return { transcript, usedFallback: false };
+  } catch (error) {
+    const fallbackTranscript = DEMO_FALLBACK_TRANSCRIPTS[sourceUrl];
+    if (fallbackTranscript) {
+      return { transcript: fallbackTranscript, usedFallback: true };
+    }
+    throw error;
+  }
 }
 
 export async function POST(request: Request) {
@@ -266,8 +297,7 @@ export async function POST(request: Request) {
       return json({ success: true, recipe: mockRecipe, modelUsed: 'mock' });
     }
 
-    const audio = await downloadAudio(sourceUrl);
-    const transcript = await transcribeAudio(audio);
+    const { transcript, usedFallback } = await getTranscript(sourceUrl);
     const { draft, model } = await extractRecipe(transcript);
     const recipe: Recipe = {
       ...draft,
@@ -276,7 +306,11 @@ export async function POST(request: Request) {
       extractedAt: new Date().toISOString(),
     };
 
-    return json({ success: true, recipe, modelUsed: model });
+    return json({
+      success: true,
+      recipe,
+      modelUsed: usedFallback ? `${model} (cached transcript fallback)` : model,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to extract recipe';
     return json({ success: false, error: message });

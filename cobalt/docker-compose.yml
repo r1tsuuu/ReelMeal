@@ -1,0 +1,29 @@
+services:
+    cobalt:
+        image: ghcr.io/imputnet/cobalt:11
+
+        init: true
+        read_only: true
+        restart: unless-stopped
+        container_name: cobalt
+
+        ports:
+            - 9000:9000/tcp
+
+        environment:
+            # REQUIRED: set this to your cloudflared/ngrok tunnel URL *before*
+            # starting the container, or cobalt's tunnel responses will point
+            # to the wrong place. Get the URL by running the tunnel first:
+            #   cloudflared tunnel --url http://localhost:9000
+            API_URL: "https://REPLACE-WITH-YOUR-TUNNEL-URL.trycloudflare.com/"
+
+        labels:
+            - com.centurylinklabs.watchtower.scope=cobalt
+
+    # updates the cobalt image automatically
+    watchtower:
+        image: ghcr.io/containrrr/watchtower
+        restart: unless-stopped
+        command: --cleanup --scope cobalt --interval 900 --include-restarting
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
