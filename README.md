@@ -1,5 +1,7 @@
 # ReelMeal
 
+**Live:** https://reel-meal.vercel.app/
+
 ReelMeal turns a cooking video into a clean, structured recipe. Paste a link or share it from your phone, and the app pulls out the ingredients and the steps so you can cook from it instead of scrubbing through a video.
 
 ## What it does
